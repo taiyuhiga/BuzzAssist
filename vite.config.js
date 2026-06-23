@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs'
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { generateImageMedia, generateVideoMedia, getGenerationCapabilities } from './lib/mediaGeneration.mjs'
-import { insertExcalidrawImage, insertExcalidrawVideo } from './lib/canvasScene.mjs'
+import { OFFICIAL_EXCALIDRAW_README, createExcalidrawView, insertExcalidrawImage, insertExcalidrawVideo } from './lib/canvasScene.mjs'
 
 const projectDir = resolve(process.env.EXCALIDRAW_PROJECT_DIR ?? process.cwd())
 const canvasDir = resolve(process.env.EXCALIDRAW_CANVAS_DIR ?? join(projectDir, 'canvas'))
@@ -186,10 +186,406 @@ async function serveCanvasAsset(req, res, next) {
   }
 }
 
+const MCP_SERVER_NAME = 'Codex Excalidraw Local Canvas MCP'
+const MCP_SERVER_VERSION = '0.1.0'
+const TOOL_READ_ME = 'read_me'
+const TOOL_CREATE_VIEW = 'create_view'
+const TOOL_GET_SELECTION = 'get_excalidraw_selection'
+const TOOL_INSERT_IMAGE = 'insert_excalidraw_image'
+const TOOL_INSERT_VIDEO = 'insert_excalidraw_video'
+const TOOL_GENERATE_IMAGE = 'generate_excalidraw_image'
+const TOOL_GENERATE_VIDEO = 'generate_excalidraw_video'
+
+function mcpToolDefinitions() {
+  return [
+    {
+      name: TOOL_READ_ME,
+      title: 'Read Excalidraw MCP Format',
+      description: 'Return the official-compatible Excalidraw element format for create_view.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: TOOL_CREATE_VIEW,
+      title: 'Create Excalidraw View',
+      description: 'Official-compatible create_view tool. Writes Excalidraw-like elements into the live local browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          elements: { type: 'string', description: 'JSON array string of Excalidraw-like elements.' },
+          append: { type: 'boolean', description: 'Append instead of replacing the previous official-compatible MCP view.' },
+          clearCanvas: { type: 'boolean', description: 'Mark all existing elements deleted before adding this view.' },
+          dryRun: { type: 'boolean', description: 'Parse and plan without saving.' }
+        },
+        required: ['elements'],
+        additionalProperties: false
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    {
+      name: TOOL_GET_SELECTION,
+      title: 'Get Excalidraw Selection',
+      description: 'Return selected elements from the live local Excalidraw browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: TOOL_INSERT_IMAGE,
+      title: 'Insert Excalidraw Image',
+      description: 'Copy a local bitmap into canvas/assets, create an Excalidraw image file and element, and update the live browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          imagePath: { type: 'string' },
+          anchorElementId: { type: 'string' },
+          sourceElementId: { type: 'string' },
+          fileName: { type: 'string' },
+          placement: { type: 'string', enum: ['right', 'left', 'below', 'replace', 'inside'] },
+          margin: { type: 'number' },
+          matchAnchor: { type: 'boolean' },
+          replaceAnchor: { type: 'boolean' },
+          displayWidth: { type: 'number' },
+          displayHeight: { type: 'number' },
+          customData: { type: 'object' },
+          dryRun: { type: 'boolean' }
+        },
+        required: ['imagePath'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: TOOL_INSERT_VIDEO,
+      title: 'Insert Excalidraw Video',
+      description: 'Copy a local video into canvas/assets, create a linked video card, and update the live browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          videoPath: { type: 'string' },
+          anchorElementId: { type: 'string' },
+          sourceElementId: { type: 'string' },
+          fileName: { type: 'string' },
+          placement: { type: 'string', enum: ['right', 'left', 'below', 'replace', 'inside'] },
+          margin: { type: 'number' },
+          matchAnchor: { type: 'boolean' },
+          replaceAnchor: { type: 'boolean' },
+          displayWidth: { type: 'number' },
+          displayHeight: { type: 'number' },
+          aspectRatio: { type: 'string' },
+          prompt: { type: 'string' },
+          model: { type: 'string' },
+          customData: { type: 'object' },
+          dryRun: { type: 'boolean' }
+        },
+        required: ['videoPath'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: TOOL_GENERATE_IMAGE,
+      title: 'Generate Excalidraw Image',
+      description: 'Generate an image with GPT-Image-2.0(Codex) or Grok Imagine(Hermes), insert it, and update the live browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string' },
+          model: { type: 'string', enum: ['gpt-image-2-codex', 'grok-imagine-image-hermes'] },
+          anchorElementId: { type: 'string' },
+          sourceElementId: { type: 'string' },
+          fileName: { type: 'string' },
+          imageName: { type: 'string' },
+          aspectRatio: { type: 'string' },
+          aspect_ratio: { type: 'string' },
+          imageSize: { type: 'string' },
+          quality: { type: 'string' },
+          referenceImagePaths: { type: 'array', items: { type: 'string' } },
+          reference_image_paths: { type: 'array', items: { type: 'string' } },
+          placement: { type: 'string', enum: ['right', 'left', 'below', 'replace', 'inside'] },
+          margin: { type: 'number' },
+          matchAnchor: { type: 'boolean' },
+          replaceAnchor: { type: 'boolean' },
+          displayWidth: { type: 'number' },
+          displayHeight: { type: 'number' },
+          customData: { type: 'object' },
+          dryRun: { type: 'boolean' }
+        },
+        required: ['prompt'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: TOOL_GENERATE_VIDEO,
+      title: 'Generate Excalidraw Video',
+      description: 'Generate a video with Grok Imagine(Hermes), insert a linked video card, and update the live browser canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string' },
+          model: { type: 'string', enum: ['grok-imagine-video-hermes'] },
+          anchorElementId: { type: 'string' },
+          sourceElementId: { type: 'string' },
+          fileName: { type: 'string' },
+          videoName: { type: 'string' },
+          aspectRatio: { type: 'string' },
+          aspect_ratio: { type: 'string' },
+          duration: { type: 'string' },
+          resolution: { type: 'string' },
+          startFramePath: { type: 'string' },
+          start_frame_path: { type: 'string' },
+          referenceImagePaths: { type: 'array', items: { type: 'string' } },
+          reference_image_paths: { type: 'array', items: { type: 'string' } },
+          placement: { type: 'string', enum: ['right', 'left', 'below', 'replace', 'inside'] },
+          margin: { type: 'number' },
+          matchAnchor: { type: 'boolean' },
+          replaceAnchor: { type: 'boolean' },
+          displayWidth: { type: 'number' },
+          displayHeight: { type: 'number' },
+          customData: { type: 'object' },
+          dryRun: { type: 'boolean' }
+        },
+        required: ['prompt'],
+        additionalProperties: false
+      }
+    }
+  ]
+}
+
+function mcpResult(id, result) {
+  return { jsonrpc: '2.0', id, result }
+}
+
+function mcpError(id, code, message) {
+  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }
+}
+
+function mcpToolResponse(text, structuredContent) {
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent
+  }
+}
+
+async function callLocalMcpTool(name, args = {}) {
+  const localArgs = { ...(args && typeof args === 'object' ? args : {}), canvasDir }
+
+  if (name === TOOL_READ_ME) {
+    return mcpToolResponse(OFFICIAL_EXCALIDRAW_README, { ok: true })
+  }
+
+  if (name === TOOL_CREATE_VIEW) {
+    const result = await createExcalidrawView(localArgs)
+    if (!result.dryRun) broadcastCanvasChanged([canvasFile])
+    return mcpToolResponse(`${result.dryRun ? 'Planned' : 'Created'} Excalidraw view with ${result.addedElementCount} element(s).`, result)
+  }
+
+  if (name === TOOL_GET_SELECTION) {
+    const selection = await readJsonFile(selectionFile).catch((error) => {
+      if (error.code === 'ENOENT') return { selectedElements: [], selectedElementIds: [], updatedAt: null }
+      throw error
+    })
+    const scene = await readJsonFile(canvasFile).then(normalizeScene).catch((error) => {
+      if (error.code === 'ENOENT') return normalizeScene(null)
+      throw error
+    })
+    return mcpToolResponse(
+      selection.selectedElements?.length ? `${selection.selectedElements.length} selected element(s).` : 'No Excalidraw elements are currently selected.',
+      { selection, selectionFile, sceneFile: canvasFile, sceneElementCount: scene.elements.length }
+    )
+  }
+
+  if (name === TOOL_INSERT_IMAGE) {
+    const result = await insertExcalidrawImage(localArgs)
+    if (!result.dryRun) broadcastCanvasChanged([canvasFile, result.assetFile])
+    return mcpToolResponse(`${result.dryRun ? 'Planned' : 'Inserted'} image ${result.elementId}.`, result)
+  }
+
+  if (name === TOOL_INSERT_VIDEO) {
+    const result = await insertExcalidrawVideo(localArgs)
+    if (!result.dryRun) broadcastCanvasChanged([canvasFile, result.assetFile])
+    return mcpToolResponse(`${result.dryRun ? 'Planned' : 'Inserted'} video card ${result.elementId}.`, result)
+  }
+
+  if (name === TOOL_GENERATE_IMAGE) {
+    const media = await generateImageMedia(localArgs)
+    const result = await insertExcalidrawImage({
+      ...localArgs,
+      mediaBuffer: media.buffer,
+      mimeType: media.mimeType,
+      fileName: localArgs.fileName || localArgs.imageName || localArgs.image_name || media.fileName,
+      customData: {
+        codexGeneratedImage: true,
+        codexGenerationModel: media.model,
+        codexGenerationPrompt: localArgs.prompt,
+        codexGenerationAspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
+        codexGenerationQuality: localArgs.quality,
+        generatorPrompt: localArgs.prompt,
+        generatorModel: localArgs.model,
+        generatorAspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
+        generatorImageQuality: localArgs.quality,
+        generatorImageSize: localArgs.imageSize ?? localArgs.size ?? '1K',
+        codexGenerationSource: media.source,
+        ...(localArgs.customData && typeof localArgs.customData === 'object' ? localArgs.customData : {})
+      }
+    })
+    if (!result.dryRun) broadcastCanvasChanged([canvasFile, result.assetFile])
+    return mcpToolResponse(`${result.dryRun ? 'Planned' : 'Generated'} image ${result.elementId}.`, { kind: 'image', model: media.model, ...result })
+  }
+
+  if (name === TOOL_GENERATE_VIDEO) {
+    const media = await generateVideoMedia(localArgs)
+    const result = await insertExcalidrawVideo({
+      ...localArgs,
+      mediaBuffer: media.buffer,
+      mimeType: media.mimeType,
+      fileName: localArgs.fileName || localArgs.videoName || localArgs.video_name || media.fileName,
+      aspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
+      duration: localArgs.duration,
+      prompt: localArgs.prompt,
+      model: media.model,
+      customData: {
+        codexGeneratedVideo: true,
+        codexGenerationModel: media.model,
+        codexGenerationPrompt: localArgs.prompt,
+        codexGenerationAspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
+        codexGenerationDuration: localArgs.duration,
+        codexGenerationResolution: localArgs.resolution,
+        videoPrompt: localArgs.prompt,
+        videoModel: localArgs.model,
+        videoAspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
+        videoDuration: localArgs.duration,
+        videoResolution: localArgs.resolution,
+        codexGenerationSource: media.source,
+        ...(localArgs.customData && typeof localArgs.customData === 'object' ? localArgs.customData : {})
+      }
+    })
+    if (!result.dryRun) broadcastCanvasChanged([canvasFile, result.assetFile])
+    return mcpToolResponse(`${result.dryRun ? 'Planned' : 'Generated'} video card ${result.elementId}.`, { kind: 'video', model: media.model, ...result })
+  }
+
+  throw new Error(`Unknown tool: ${name}`)
+}
+
+async function handleMcpMessage(message) {
+  if (!message || typeof message !== 'object') return mcpError(null, -32600, 'Invalid JSON-RPC request.')
+  const { id, method, params } = message
+
+  if (method === 'initialize') {
+    return mcpResult(id, {
+      protocolVersion: params?.protocolVersion ?? '2025-11-25',
+      capabilities: { tools: {} },
+      serverInfo: { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
+      instructions:
+        'This MCP endpoint controls the local Excalidraw browser canvas at the same origin. Use read_me/create_view for official-compatible Excalidraw MCP drawing into the live canvas, and use the media tools for image/video generation.'
+    })
+  }
+
+  if (method === 'ping') return mcpResult(id, {})
+  if (method === 'tools/list') return mcpResult(id, { tools: mcpToolDefinitions() })
+  if (method === 'tools/call') {
+    try {
+      const result = await callLocalMcpTool(params?.name, params?.arguments ?? {})
+      return mcpResult(id, result)
+    } catch (error) {
+      return mcpError(id, -32602, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  if (id === undefined) return null
+  return mcpError(id, -32601, `Method not found: ${method}`)
+}
+
+async function serveMcp(req, res) {
+  const url = new URL(req.url, 'http://127.0.0.1')
+  if (url.pathname !== '/mcp') return false
+
+  res.setHeader('access-control-allow-origin', '*')
+  res.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS')
+  res.setHeader('access-control-allow-headers', 'Content-Type, Accept, Authorization, Mcp-Session-Id')
+  res.setHeader('access-control-expose-headers', 'Mcp-Session-Id')
+
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    res.end()
+    return
+  }
+
+  if (req.method === 'GET') {
+    sendJson(res, 200, {
+      name: MCP_SERVER_NAME,
+      version: MCP_SERVER_VERSION,
+      endpoint: '/mcp',
+      canvasUrl: `http://127.0.0.1:${defaultPort}/`,
+      tools: mcpToolDefinitions().map((tool) => tool.name)
+    })
+    return
+  }
+
+  if (req.method === 'DELETE') {
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
+  if (req.method !== 'POST') {
+    res.statusCode = 405
+    res.setHeader('allow', 'GET, POST, DELETE, OPTIONS')
+    res.end()
+    return
+  }
+
+  try {
+    const body = JSON.parse(await readRequestBody(req))
+    const response = Array.isArray(body)
+      ? (await Promise.all(body.map((message) => handleMcpMessage(message)))).filter(Boolean)
+      : await handleMcpMessage(body)
+
+    if (!response) {
+      res.statusCode = 202
+      res.end()
+      return
+    }
+
+    sendJson(res, 200, response)
+  } catch (error) {
+    sendJson(res, 400, mcpError(null, -32700, error instanceof Error ? error.message : String(error)))
+  }
+
+  return true
+}
+
 function canvasStoragePlugin() {
   return {
     name: 'codex-excalidraw-storage',
     configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        try {
+          if (await serveMcp(req, res)) return
+          next()
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
       server.middlewares.use(serveCanvasAsset)
       server.watcher.add(canvasFile)
       let canvasWatchTimer = null

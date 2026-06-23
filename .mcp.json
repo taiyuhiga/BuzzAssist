@@ -6,11 +6,17 @@
       "note": "Official open-source Excalidraw MCP App from excalidraw/excalidraw-mcp. Use for prompt-to-diagram Excalidraw generation and interactive MCP App rendering."
     },
     "excalidraw_mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:43219/mcp",
+      "note": "Local MCP endpoint served by the same browser canvas process. Tools update the live local Excalidraw canvas at http://127.0.0.1:43219/."
+    },
+    "excalidraw_mcp_stdio": {
       "command": "bash",
       "args": [
         "./scripts/start-mcp.sh"
       ],
-      "cwd": "."
+      "cwd": ".",
+      "note": "Fallback stdio MCP server for clients that cannot connect to the local browser canvas HTTP endpoint."
     }
   }
 }

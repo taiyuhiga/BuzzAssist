@@ -5,7 +5,7 @@ description: Use the official Excalidraw MCP App for prompt-to-diagram creation.
 
 # Excalidraw Official MCP
 
-Use this skill when the user asks for the official Excalidraw MCP or wants a prompt-to-diagram workflow.
+Use this skill when the user asks for the official Excalidraw MCP or wants a prompt-to-diagram workflow. If the user wants the result on the currently open local browser canvas, use the local `excalidraw_mcp` HTTP endpoint, not the remote official server.
 
 ## MCP Server
 
@@ -19,10 +19,21 @@ The plugin config exposes the official open-source Excalidraw MCP App as:
 }
 ```
 
+For the local browser canvas, the plugin config exposes:
+
+```json
+{
+  "name": "excalidraw_mcp",
+  "type": "http",
+  "url": "http://127.0.0.1:43219/mcp"
+}
+```
+
 ## Routing
 
-- Use `excalidraw_official` for official Excalidraw MCP App generation, quick diagrams, and interactive MCP App rendering.
-- Use the local `excalidraw_mcp` server when the user needs the current project-local canvas state, selected elements, asset insertion, or image/video generation into this repository's persisted canvas.
+- Use `excalidraw_official` for the hosted official Excalidraw MCP App generation and interactive MCP App rendering.
+- Use the local `excalidraw_mcp` HTTP server when the user says "this canvas", "browser screen", "local Excalidraw canvas", or needs the result to appear in `http://127.0.0.1:43219/`.
+- The local `excalidraw_mcp` implements official-compatible `read_me` and `create_view`; `create_view` writes directly into this repository's persisted canvas and the browser updates through the canvas event stream.
 - If a client does not support MCP Apps, explain that the official server may still connect as MCP but the interactive app rendering may be unavailable in that client.
 
 ## Prompting

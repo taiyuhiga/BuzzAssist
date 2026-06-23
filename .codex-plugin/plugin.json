@@ -17,13 +17,14 @@
   "interface": {
     "displayName": "Codex Excalidraw",
     "shortDescription": "Use official and local Excalidraw MCP from Codex.",
-    "longDescription": "Codex Excalidraw bundles the official remote Excalidraw MCP App for prompt-to-diagram workflows and a local project-bound Excalidraw canvas with MCP tools for reading selection state, inserting assets, and generating images or videos into the scene.",
+    "longDescription": "Codex Excalidraw bundles the official remote Excalidraw MCP App for prompt-to-diagram workflows and a local project-bound Excalidraw browser canvas that serves its own HTTP MCP endpoint at /mcp. Local MCP tool calls update the same canvas shown in the browser, including official-compatible read_me/create_view drawing and image/video generation tools.",
     "developerName": "higataiyu",
     "category": "Productivity",
     "brandColor": "#5f3dc4",
     "capabilities": [
       "Interactive Excalidraw canvas",
       "Official Excalidraw MCP App",
+      "Live local HTTP MCP endpoint",
       "Project-local persistence",
       "MCP selection reading",
       "MCP image generation",
@@ -31,6 +32,7 @@
     ],
     "defaultPrompt": [
       "Open the Excalidraw canvas for this project.",
+      "Use read_me and create_view to draw into the live local Excalidraw canvas.",
       "Use the official Excalidraw MCP to draw an architecture diagram.",
       "Generate a new image into the selected Excalidraw AI holder.",
       "Generate a Grok Imagine video next to the selected Excalidraw element."

@@ -17,6 +17,7 @@ if [ ! -d node_modules ] || [ ! -x node_modules/.bin/vite ]; then
 fi
 
 echo "Codex Excalidraw canvas: http://127.0.0.1:${PORT}"
+echo "Codex Excalidraw MCP: http://127.0.0.1:${PORT}/mcp"
 echo "Codex Excalidraw data: ${CANVAS_DIR}/excalidraw-canvas.json"
 echo "Codex Excalidraw assets: ${CANVAS_DIR}/assets -> http://127.0.0.1:${PORT}/excalidraw-assets/"
 exec npm run dev -- --host 127.0.0.1 --port "$PORT"

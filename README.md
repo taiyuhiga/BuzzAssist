@@ -34,7 +34,8 @@ canvas/assets/
 This plugin includes two Excalidraw MCP entries:
 
 - `excalidraw_official`: the official open-source Excalidraw MCP App hosted by Excalidraw, useful for prompt-to-diagram generation and MCP App rendering
-- `excalidraw_mcp`: this repository's local project-bound MCP server, useful for reading the current canvas selection, inserting local assets, and generating images/videos into the persisted canvas
+- `excalidraw_mcp`: this repository's local project-bound HTTP MCP endpoint, served by the same browser canvas process at `http://127.0.0.1:43219/mcp`
+- `excalidraw_mcp_stdio`: fallback stdio MCP server for clients that cannot connect to the local browser canvas HTTP endpoint
 
 The official remote MCP is configured in `.mcp.json` as:
 
@@ -45,14 +46,33 @@ The official remote MCP is configured in `.mcp.json` as:
 }
 ```
 
-To use the local MCP server directly, start it with:
+The local browser canvas MCP is configured in `.mcp.json` as:
+
+```json
+{
+  "type": "http",
+  "url": "http://127.0.0.1:43219/mcp"
+}
+```
+
+Start the canvas first:
+
+```bash
+./scripts/start-canvas.sh /path/to/user/project
+```
+
+Then MCP clients can connect to `http://127.0.0.1:43219/mcp`. Tool calls update the same canvas shown at `http://127.0.0.1:43219/` and the browser refreshes through the existing canvas event stream.
+
+For clients that need stdio instead of HTTP:
 
 ```bash
 ./scripts/start-mcp.sh
 ```
 
-Local tools:
+Local tools include both official-compatible diagram tools and media tools:
 
+- `read_me`: returns the official-compatible Excalidraw element format used by `create_view`
+- `create_view`: accepts a JSON array string of Excalidraw-like elements and writes the diagram into the live local browser canvas
 - `get_excalidraw_selection`: reads selected elements from `canvas/excalidraw-selection.json`
 - `insert_excalidraw_image`: copies a local bitmap into `canvas/assets/`, adds an Excalidraw image file and element, and saves the scene
 - `insert_excalidraw_video`: copies a local video into `canvas/assets/`, adds a linked video card, and saves the scene

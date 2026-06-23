@@ -4,12 +4,16 @@ import readline from "node:readline";
 import { generateKeyBetween } from "fractional-indexing";
 import { generateImageMedia, generateVideoMedia } from "../lib/mediaGeneration.mjs";
 import {
+  OFFICIAL_EXCALIDRAW_README,
+  createExcalidrawView,
   insertExcalidrawImage as insertExcalidrawImageMedia,
   insertExcalidrawVideo as insertExcalidrawVideoMedia,
 } from "../lib/canvasScene.mjs";
 
 const SERVER_NAME = "Codex Excalidraw MCP";
 const SERVER_VERSION = "0.1.0";
+const TOOL_READ_ME = "read_me";
+const TOOL_CREATE_VIEW = "create_view";
 const TOOL_GET_SELECTION = "get_excalidraw_selection";
 const TOOL_INSERT_IMAGE = "insert_excalidraw_image";
 const TOOL_INSERT_VIDEO = "insert_excalidraw_video";
@@ -547,6 +551,46 @@ async function generateExcalidrawVideo(args = {}) {
 function toolDefinitions() {
   return [
     {
+      name: TOOL_READ_ME,
+      title: "Read Excalidraw MCP Format",
+      description: "Return the official-compatible Excalidraw element format for create_view. Call before drawing with create_view.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    {
+      name: TOOL_CREATE_VIEW,
+      title: "Create Excalidraw View",
+      description: "Official-compatible create_view tool. Writes Excalidraw-like elements into the project-local canvas used by the browser UI.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          elements: { type: "string", description: "JSON array string of Excalidraw-like elements. Supports rectangle, ellipse, diamond, arrow, line, text, cameraUpdate, and delete." },
+          projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          append: { type: "boolean", description: "Append to the previous official-compatible MCP view instead of replacing it." },
+          clearCanvas: { type: "boolean", description: "Mark all existing elements deleted before adding this view." },
+          dryRun: { type: "boolean", description: "Parse and plan without saving." },
+        },
+        required: ["elements"],
+        additionalProperties: false,
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    {
       name: TOOL_GET_SELECTION,
       title: "Get Excalidraw Selection",
       description: "Return selected Excalidraw elements from canvas/excalidraw-selection.json.",
@@ -726,6 +770,28 @@ function toolDefinitions() {
 }
 
 async function handleToolCall(id, params) {
+  if (params?.name === TOOL_READ_ME) {
+    sendResult(id, {
+      content: [{ type: "text", text: OFFICIAL_EXCALIDRAW_README }],
+      structuredContent: { ok: true },
+    });
+    return;
+  }
+
+  if (params?.name === TOOL_CREATE_VIEW) {
+    const result = await createExcalidrawView(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned" : "Created"} Excalidraw view with ${result.addedElementCount} element(s).`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   if (params?.name === TOOL_GET_SELECTION) {
     const args = params.arguments ?? {};
     const scene = await loadScene(args);
@@ -816,7 +882,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update project-local Excalidraw canvas state. Use get_excalidraw_selection for persisted browser selection, insert_excalidraw_image/insert_excalidraw_video for local assets, and generate_excalidraw_image/generate_excalidraw_video for GPT-Image-2.0(Codex) or Grok Imagine(Hermes) generation.",
+        "Read and update the project-local Excalidraw browser canvas. Use read_me/create_view for official-compatible Excalidraw MCP drawing into the live local canvas, get_excalidraw_selection for persisted browser selection, insert_excalidraw_image/insert_excalidraw_video for local assets, and generate_excalidraw_image/generate_excalidraw_video for GPT-Image-2.0(Codex) or Grok Imagine(Hermes) generation.",
     });
     return;
   }
