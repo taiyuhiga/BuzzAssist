@@ -12,6 +12,7 @@ import {
   VIDEO_MODEL_FAMILIES,
   concreteModelFor,
   defaultRouteIdFor,
+  generationModelFor,
   imageFamilyForModel,
   routeIdForModel,
   videoFamilyForModel
@@ -4437,7 +4438,9 @@ export default function App() {
             }
           : {
               prompt,
-              model: savedForm.imageModel,
+              // Lovart bills GPT Image 2 quality tiers as separate tools;
+              // the quality setting picks the tier at submit time.
+              model: generationModelFor(imageFamilyForModel(savedForm.imageModel), savedForm.imageModel, savedForm.quality),
               aspectRatio: savedForm.aspectRatio,
               quality: savedForm.quality,
               imageSize: savedForm.imageSize,
