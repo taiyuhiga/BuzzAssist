@@ -11,6 +11,8 @@ const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
 const GENERATE_IMAGE_ENDPOINT = '/api/generate/image'
 const GENERATE_VIDEO_ENDPOINT = '/api/generate/video'
+const GENERATE_SUBTITLES_ENDPOINT = '/api/generate/subtitles'
+const SILENCE_CUT_ENDPOINT = '/api/video/silence-cut'
 const GENERATION_CAPABILITIES_ENDPOINT = '/api/generation-capabilities'
 const ASSET_UPLOAD_ENDPOINT = '/api/assets/upload'
 const SELECTION_ENDPOINT = '/api/selection'
@@ -18,6 +20,8 @@ const VIEW_STATE_ENDPOINT = '/api/view-state'
 const AI_HOLDER_KEY = 'codexAiImageHolder'
 const GENERATOR_FRAME_TAG = 'buzzassist.imageGenerator.frame'
 const VIDEO_GENERATOR_FRAME_TAG = 'buzzassist.videoGenerator.frame'
+const SUBTITLE_GENERATOR_FRAME_TAG = 'buzzassist.subtitleGenerator.frame'
+const SILENCE_CUT_GENERATOR_FRAME_TAG = 'buzzassist.silenceCutGenerator.frame'
 const GENERATOR_FRAME_BORDER_COLOR = '#c4a5f7'
 const GENERATOR_FRAME_FILL_COLOR = '#e8ddf5'
 const GENERATOR_FRAME_STROKE_WIDTH = 1
@@ -80,6 +84,44 @@ const DEFAULT_FRAME_FORM = {
   videoReferenceVideos: [],
   videoReferenceAudios: [],
   videoGenerateAudio: true,
+  subtitleMode: 'scriptless',
+  subtitleLineCount: 2,
+  subtitleMaxChars: 30,
+  subtitleHoldSeconds: 0,
+  subtitlePunctuationMode: 'auto',
+  subtitleFillerMode: 'keep',
+  subtitleScriptText: '',
+  subtitleAudio: null,
+  silenceCutModel: 'ffmpeg-local',
+  silenceCutVideo: null,
+  silenceCutDetectSeconds: 0.6,
+  silenceCutKeepSeconds: 0.25,
+  silenceCutThresholdDb: -34,
+  silenceCutPreMarginSeconds: 0.08,
+  silenceCutPostMarginSeconds: 0.12,
+  silenceCutAudioFadeSeconds: 0.03,
+}
+
+const SUBTITLE_MODE_OPTIONS = [
+  ['scripted', '台本あり'],
+  ['scriptless', '台本なし']
+]
+
+const SUBTITLE_PUNCTUATION_OPTIONS = [
+  ['auto', '自動'],
+  ['none', 'なし']
+]
+
+const SUBTITLE_FILLER_OPTIONS = [
+  ['keep', 'そのまま'],
+  ['safe', '明確だけ'],
+  ['contextual', 'AI判断']
+]
+
+const SILENCE_CUT_MODEL_LABEL = 'FFmpeg（ローカル）'
+
+function defaultSubtitleMaxCharsFor(lineCount) {
+  return lineCount === 1 ? 20 : 30
 }
 
 const IMAGE_ASPECTS = {
@@ -142,8 +184,8 @@ function getVideoFrameUploadLabel(tab, target) {
 }
 
 function getUploadTargetKind(target) {
-  if (target === 'videoReferenceVideos') return 'video'
-  if (target === 'videoReferenceAudios') return 'audio'
+  if (target === 'videoReferenceVideos' || target === 'silenceCutVideo') return 'video'
+  if (target === 'videoReferenceAudios' || target === 'subtitleAudio') return 'audio'
   return 'image'
 }
 
@@ -210,6 +252,30 @@ function VideoGeneratorToolIcon() {
       <rect x="3" y="6" width="12" height="12" rx="2" />
       <path d="M7 12h4" />
       <path d="M9 10v4" />
+    </svg>
+  )
+}
+
+function SrtGeneratorToolIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M6 12h6" />
+      <path d="M15 12h3" />
+      <path d="M6 15.5h3" />
+      <path d="M12 15.5h6" />
+    </svg>
+  )
+}
+
+function SilenceCutGeneratorToolIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="6" cy="7" r="2.4" />
+      <circle cx="6" cy="17" r="2.4" />
+      <path d="M8.2 8.5L19.5 18.5" />
+      <path d="M8.2 15.5L19.5 5.5" />
+      <path d="M13.4 12l1.2 1.1" />
     </svg>
   )
 }
@@ -299,6 +365,35 @@ function VideoCenterIcon({ size = 52 }) {
   )
 }
 
+function SrtCenterIcon({ size = 52 }) {
+  const height = Math.max(6, Math.round(size * (60 / 84)))
+  const strokeMain = Math.max(1.2, Math.round(size * 0.072 * 10) / 10)
+  return (
+    <svg width={size} height={height} viewBox="0 0 84 60" fill="none" aria-hidden="true">
+      <rect x="8" y="6" width="68" height="48" rx="6" stroke="currentColor" strokeWidth={strokeMain} />
+      <path d="M18 34h22" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M46 34h20" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M18 43h12" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M36 43h30" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function SilenceCutCenterIcon({ size = 52 }) {
+  const height = Math.max(6, Math.round(size * (60 / 84)))
+  const strokeMain = Math.max(1.2, Math.round(size * 0.072 * 10) / 10)
+  return (
+    <svg width={size} height={height} viewBox="0 0 84 60" fill="none" aria-hidden="true">
+      <path d="M10 24v12M18 18v24M26 26v8" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M58 26v8M66 18v24M74 24v12" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M36 14l12 32" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M48 14l-12 32" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <circle cx="34" cy="11" r="3.4" stroke="currentColor" strokeWidth={strokeMain} />
+      <circle cx="50" cy="11" r="3.4" stroke="currentColor" strokeWidth={strokeMain} />
+    </svg>
+  )
+}
+
 function AudioWaveIcon({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -309,6 +404,18 @@ function AudioWaveIcon({ size = 18 }) {
       <rect x="20" y="7" width="2" height="10" rx="1" fill="currentColor" />
     </svg>
   )
+}
+
+function sliderTrackStyle(value, min, max) {
+  const ratio = Math.max(0, Math.min(1, (Number(value) - min) / (max - min || 1)))
+  const percent = ratio * 100
+  return {
+    background: `linear-gradient(to right, #7c3aed 0%, #7c3aed ${percent}%, #e0e0e0 ${percent}%, #e0e0e0 100%)`
+  }
+}
+
+function formatSecondsValue(value) {
+  return `${Math.round(Number(value) * 100) / 100}s`
 }
 
 function formatAssetDuration(seconds) {
@@ -508,7 +615,10 @@ function sceneFingerprint(scene) {
     .map((e) => `${e.id}:${e.version ?? 0}:${e.versionNonce ?? 0}:${e.isDeleted ? 1 : 0}`)
     .sort()
     .join('|')
-  const files = Object.keys(scene.files ?? {}).sort().join(',')
+  const files = Object.entries(scene.files ?? {})
+    .map(([id, file]) => `${id}:${(file?.dataURL ?? '').length}`)
+    .sort()
+    .join(',')
   return `${els}#${files}`
 }
 
@@ -546,7 +656,14 @@ function sanitizeGeneratorCustomData(customData) {
   setValue('videoReferenceAudios', normalizeAssetList(next.videoReferenceAudios))
   setValue('videoStartFrameAsset', sanitizeAsset(next.videoStartFrameAsset))
   setValue('videoEndFrameAsset', sanitizeAsset(next.videoEndFrameAsset))
+  setValue('subtitleAudioAsset', sanitizeAsset(next.subtitleAudioAsset))
+  setValue('silenceCutVideoAsset', sanitizeAsset(next.silenceCutVideoAsset))
   return changed ? next : customData
+}
+
+function finiteNumberOr(value, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
 }
 
 function getSelectedIds(appState = {}) {
@@ -699,14 +816,17 @@ function isViewportPlacementNearViewport(placement, appState = {}, margin = 128)
   )
 }
 
-function getPanelPlacementFromViewportTarget(target, isVideo = false) {
+function getPanelPlacementFromViewportTarget(target, kind = 'image') {
+  const isVideo = kind === true || kind === 'video'
   const frameViewportWidth = Math.max(1, Number(target?.width) || 1)
   const frameViewportHeight = Math.max(1, Number(target?.height) || 1)
   const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(1, window.innerWidth || 1280)
   const maxPanelWidth = Math.max(GENERATOR_PANEL_IMAGE_MIN_WIDTH, viewportWidth - GENERATOR_FRAME_EDGE_MARGIN * 2)
   const panelWidth = isVideo
     ? Math.min(GENERATOR_PANEL_VIDEO_WIDTH, maxPanelWidth)
-    : Math.min(clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH), maxPanelWidth)
+    : kind === 'subtitle' || kind === 'silenceCut'
+      ? Math.min(500, maxPanelWidth)
+      : Math.min(clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH), maxPanelWidth)
   const rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
   const rawTop = Math.round((Number(target?.top) || 0) + frameViewportHeight + 4)
 
@@ -779,8 +899,29 @@ function isVideoGeneratorFrame(element) {
   return element?.customData?.[VIDEO_GENERATOR_FRAME_TAG] === true
 }
 
+function isSubtitleGeneratorFrame(element) {
+  return element?.customData?.[SUBTITLE_GENERATOR_FRAME_TAG] === true
+}
+
+function isSilenceCutGeneratorFrame(element) {
+  return element?.customData?.[SILENCE_CUT_GENERATOR_FRAME_TAG] === true
+}
+
 function isGeneratorFrame(element) {
-  return !element?.isDeleted && (isImageGeneratorFrame(element) || isVideoGeneratorFrame(element))
+  return (
+    !element?.isDeleted &&
+    (isImageGeneratorFrame(element) ||
+      isVideoGeneratorFrame(element) ||
+      isSubtitleGeneratorFrame(element) ||
+      isSilenceCutGeneratorFrame(element))
+  )
+}
+
+function generatorFrameTagFor(kind) {
+  if (kind === 'video') return VIDEO_GENERATOR_FRAME_TAG
+  if (kind === 'subtitle') return SUBTITLE_GENERATOR_FRAME_TAG
+  if (kind === 'silenceCut') return SILENCE_CUT_GENERATOR_FRAME_TAG
+  return GENERATOR_FRAME_TAG
 }
 
 function isGeneratedImageResult(element) {
@@ -804,7 +945,14 @@ function isCanvasVideoElement(element) {
 }
 
 function getGeneratorKind(element) {
-  return isVideoGeneratorFrame(element) ? 'video' : 'image'
+  if (isVideoGeneratorFrame(element)) return 'video'
+  if (isSubtitleGeneratorFrame(element)) return 'subtitle'
+  if (isSilenceCutGeneratorFrame(element)) return 'silenceCut'
+  return 'image'
+}
+
+function isGeneratedSubtitleResult(element) {
+  return !element?.isDeleted && element?.customData?.codexGeneratedSubtitle === true
 }
 
 function getGeneratedResultKind(element) {
@@ -1132,11 +1280,59 @@ function frameFormFromElement(element) {
     videoReferenceImages,
     videoReferenceVideos,
     videoReferenceAudios,
-    videoGenerateAudio: customData.videoGenerateAudio !== undefined ? customData.videoGenerateAudio !== false : DEFAULT_FRAME_FORM.videoGenerateAudio
+    videoGenerateAudio: customData.videoGenerateAudio !== undefined ? customData.videoGenerateAudio !== false : DEFAULT_FRAME_FORM.videoGenerateAudio,
+    subtitleMode: customData.subtitleMode === 'scripted' || customData.subtitleMode === 'scriptless'
+      ? customData.subtitleMode
+      : DEFAULT_FRAME_FORM.subtitleMode,
+    subtitleLineCount: finiteNumberOr(customData.subtitleLineCount, DEFAULT_FRAME_FORM.subtitleLineCount) === 1 ? 1 : 2,
+    subtitleMaxChars: clamp(Math.round(finiteNumberOr(customData.subtitleMaxChars, DEFAULT_FRAME_FORM.subtitleMaxChars)), 3, 40),
+    subtitleHoldSeconds: clamp(finiteNumberOr(customData.subtitleHoldSeconds, DEFAULT_FRAME_FORM.subtitleHoldSeconds), 0, 3),
+    subtitlePunctuationMode: customData.subtitlePunctuationMode === 'none' ? 'none' : DEFAULT_FRAME_FORM.subtitlePunctuationMode,
+    subtitleFillerMode: ['keep', 'safe', 'contextual'].includes(customData.subtitleFillerMode)
+      ? customData.subtitleFillerMode
+      : DEFAULT_FRAME_FORM.subtitleFillerMode,
+    subtitleScriptText: typeof customData.subtitleScriptText === 'string' ? customData.subtitleScriptText : '',
+    subtitleAudio: customData.subtitleAudioAsset && typeof customData.subtitleAudioAsset === 'object'
+      ? customData.subtitleAudioAsset
+      : null,
+    silenceCutModel: DEFAULT_FRAME_FORM.silenceCutModel,
+    silenceCutVideo: customData.silenceCutVideoAsset && typeof customData.silenceCutVideoAsset === 'object'
+      ? customData.silenceCutVideoAsset
+      : null,
+    silenceCutDetectSeconds: clamp(finiteNumberOr(customData.silenceCutDetectSeconds, DEFAULT_FRAME_FORM.silenceCutDetectSeconds), 0.3, 2),
+    silenceCutKeepSeconds: clamp(finiteNumberOr(customData.silenceCutKeepSeconds, DEFAULT_FRAME_FORM.silenceCutKeepSeconds), 0, 1),
+    silenceCutThresholdDb: clamp(finiteNumberOr(customData.silenceCutThresholdDb, DEFAULT_FRAME_FORM.silenceCutThresholdDb), -60, -20),
+    silenceCutPreMarginSeconds: clamp(finiteNumberOr(customData.silenceCutPreMarginSeconds, DEFAULT_FRAME_FORM.silenceCutPreMarginSeconds), 0.05, 0.3),
+    silenceCutPostMarginSeconds: clamp(finiteNumberOr(customData.silenceCutPostMarginSeconds, DEFAULT_FRAME_FORM.silenceCutPostMarginSeconds), 0.05, 0.3),
+    silenceCutAudioFadeSeconds: clamp(finiteNumberOr(customData.silenceCutAudioFadeSeconds, DEFAULT_FRAME_FORM.silenceCutAudioFadeSeconds), 0, 0.1)
   }
 }
 
 function frameCustomDataFromForm(kind, form) {
+  if (kind === 'subtitle') {
+    return {
+      subtitleMode: form.subtitleMode,
+      subtitleLineCount: form.subtitleLineCount,
+      subtitleMaxChars: form.subtitleMaxChars,
+      subtitleHoldSeconds: form.subtitleHoldSeconds,
+      subtitlePunctuationMode: form.subtitlePunctuationMode,
+      subtitleFillerMode: form.subtitleFillerMode,
+      subtitleScriptText: form.subtitleScriptText,
+      subtitleAudioAsset: form.subtitleAudio || null
+    }
+  }
+  if (kind === 'silenceCut') {
+    return {
+      silenceCutModel: form.silenceCutModel,
+      silenceCutDetectSeconds: form.silenceCutDetectSeconds,
+      silenceCutKeepSeconds: form.silenceCutKeepSeconds,
+      silenceCutThresholdDb: form.silenceCutThresholdDb,
+      silenceCutPreMarginSeconds: form.silenceCutPreMarginSeconds,
+      silenceCutPostMarginSeconds: form.silenceCutPostMarginSeconds,
+      silenceCutAudioFadeSeconds: form.silenceCutAudioFadeSeconds,
+      silenceCutVideoAsset: form.silenceCutVideo || null
+    }
+  }
   return kind === 'video'
     ? {
         videoPrompt: form.prompt,
@@ -1222,9 +1418,10 @@ function getCanvasMediaPixelSize(element, files = {}) {
 function buildSelectedImageOverlays(scene) {
   const appState = scene.appState ?? {}
   const selectedIds = new Set(getSelectedIds(appState))
-  if (selectedIds.size === 0) return []
+  // Youtube-AGI shows media headers for every media element near the
+  // viewport, not only the selected one.
   return scene.elements
-    .filter((element) => selectedIds.has(element.id) && (isCanvasImageElement(element) || isCanvasVideoElement(element)))
+    .filter((element) => !element.isDeleted && (isCanvasImageElement(element) || isCanvasVideoElement(element)))
     .map((element) => {
       const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
       const pixelSize = getCanvasMediaPixelSize(element, scene.files)
@@ -1232,6 +1429,7 @@ function buildSelectedImageOverlays(scene) {
         id: element.id,
         assetType: isCanvasVideoElement(element) ? 'video' : 'image',
         fileName: getCanvasMediaDisplayName(element, scene.files),
+        isSelected: selectedIds.has(element.id),
         left: placement.left,
         top: placement.top,
         width: placement.width,
@@ -1241,6 +1439,7 @@ function buildSelectedImageOverlays(scene) {
         pixelHeight: pixelSize.height
       }
     })
+    .filter((overlay) => overlay.isSelected || isViewportPlacementNearViewport(overlay, appState))
 }
 
 function buildVideoPlaybackOverlays(scene) {
@@ -1269,6 +1468,291 @@ function buildVideoPlaybackOverlays(scene) {
     .filter((overlay) => overlay && (overlay.isSelected || isViewportPlacementNearViewport(overlay, appState)))
 }
 
+function buildSubtitlePreviewOverlays(scene) {
+  const appState = scene.appState ?? {}
+  const selectedIds = new Set(getSelectedIds(appState))
+  const zoom = Number(appState.zoom?.value) || 1
+  return scene.elements
+    .filter(isGeneratedSubtitleResult)
+    .map((element) => {
+      const assetUrl = element.customData?.codexAssetUrl || ''
+      if (!assetUrl) return null
+      const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+      return {
+        id: element.id,
+        assetUrl,
+        fileName: element.customData?.codexFileName || 'subtitles.srt',
+        cueCount: Number(element.customData?.subtitleCueCount) || 0,
+        left: placement.left,
+        top: placement.top,
+        width: placement.width,
+        height: placement.height,
+        angle: Number(element.angle) || 0,
+        zoom,
+        isSelected: selectedIds.has(element.id)
+      }
+    })
+    .filter((overlay) => overlay && (overlay.isSelected || isViewportPlacementNearViewport(overlay, appState)))
+}
+
+// Fetched SRT text, split into raw lines, cached per asset URL. The lines map
+// is also read synchronously by the canvas wheel handler to clamp scrolling.
+const srtTextCache = new Map()
+const srtLinesCache = new Map()
+
+function splitSrtLines(text) {
+  const source = String(text || '').replace(/\r\n?/g, '\n').trimEnd()
+  return source ? source.split('\n') : ['']
+}
+
+function fetchSrtLines(url) {
+  let pending = srtTextCache.get(url)
+  if (pending) return pending
+  pending = (async () => {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`Failed to load subtitles ${url}: ${response.status}`)
+    const lines = splitSrtLines(await response.text())
+    srtLinesCache.set(url, lines)
+    return lines
+  })()
+  pending.catch(() => {
+    if (srtTextCache.get(url) === pending) srtTextCache.delete(url)
+  })
+  srtTextCache.set(url, pending)
+  return pending
+}
+
+function classifySrtLine(line) {
+  if (!line.trim()) return 'blank'
+  if (/^\d+$/.test(line.trim())) return 'index'
+  if (/^\s*\d{1,2}:\d{2}:\d{2}[,.　]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.　]\d{1,3}/.test(line)) {
+    return 'timestamp'
+  }
+  return 'text'
+}
+
+function renderHighlightedSrtLine(line, kind) {
+  if (kind === 'timestamp') {
+    const match = line.match(/^(\s*)(\d{1,2}:\d{2}:\d{2}[,.　]\d{1,3})(\s*-->\s*)(\d{1,2}:\d{2}:\d{2}[,.　]\d{1,3})(.*)$/)
+    if (match) {
+      const [, lead, start, arrow, end, tail] = match
+      return (
+        <>
+          {lead}
+          <span style={{ color: '#0a8754' }}>{start}</span>
+          <span style={{ color: '#7d7d7d' }}>{arrow}</span>
+          <span style={{ color: '#0a8754' }}>{end}</span>
+          <span style={{ color: '#2d2d2d' }}>{tail}</span>
+        </>
+      )
+    }
+  }
+  if (kind === 'index') {
+    return <span style={{ color: '#0451a5', fontWeight: 600 }}>{line}</span>
+  }
+  return line
+}
+
+function getSubtitlePreviewBaseFontSize(canvasViewportWidth) {
+  const baseFontSize = 13
+  const minFontSize = 7
+  const compactWidth = 360
+  if (canvasViewportWidth >= compactWidth) {
+    return baseFontSize
+  }
+  return Math.max(minFontSize, Math.min(baseFontSize, canvasViewportWidth / 28))
+}
+
+function getSubtitlePreviewLayout(lineCount, overlayWidth, overlayHeight, zoom, isSelected) {
+  const selectedPreviewInset = isSelected ? 3 : 0
+  const viewportWidth = Math.max(1, overlayWidth - selectedPreviewInset * 2)
+  const viewportHeight = Math.max(1, overlayHeight - selectedPreviewInset * 2)
+  const safeZoom = Math.max(0.01, zoom || 1)
+  const canvasViewportWidth = viewportWidth / safeZoom
+  const fontSize = getSubtitlePreviewBaseFontSize(canvasViewportWidth) * safeZoom
+  const lineHeight = 1.5
+  const rowHeight = Math.max(1, fontSize * lineHeight)
+  const topPadding = Math.round(fontSize * 0.5)
+  const bottomPadding = Math.round(fontSize * 1.4)
+  const contentHeight = lineCount * rowHeight + topPadding + bottomPadding
+  return {
+    selectedPreviewInset,
+    viewportWidth,
+    viewportHeight,
+    fontSize,
+    lineHeight,
+    rowHeight,
+    topPadding,
+    contentHeight,
+    maxScroll: Math.max(0, contentHeight - viewportHeight)
+  }
+}
+
+// Verbatim port of Youtube-AGI's SubtitleScrollablePreviewOverlay: a white
+// editor-style card with a line-number gutter and syntax-highlighted raw SRT
+// lines. Fully pointer-events none — scrolling is driven externally via the
+// scrollOffset prop (canvas wheel handler), so click/drag/select pass through
+// to Excalidraw untouched.
+function SubtitleCanvasOverlay({ overlay, scrollOffset }) {
+  const [lines, setLines] = useState(() => srtLinesCache.get(overlay.assetUrl) ?? [''])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchSrtLines(overlay.assetUrl)
+      .then((nextLines) => {
+        if (!cancelled) setLines(nextLines)
+      })
+      .catch(() => {
+        if (!cancelled) setLines(['字幕を読み込めませんでした。'])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [overlay.assetUrl])
+
+  const layout = getSubtitlePreviewLayout(lines.length, overlay.width, overlay.height, overlay.zoom, overlay.isSelected)
+  const { selectedPreviewInset, viewportHeight, fontSize, lineHeight, rowHeight, topPadding, contentHeight } = layout
+  const safeScrollOffset = Math.max(0, Math.min(scrollOffset || 0, layout.maxScroll))
+  const gutterDigits = Math.max(2, String(lines.length).length)
+  const gutterWidth = Math.max(Math.round(fontSize * 1.8), Math.round(fontSize * 0.62 * (gutterDigits + 1.5)))
+  const headerFontSize = Math.max(5, Math.min(14, Math.round(overlay.width * 0.055)))
+  const headerOffset = Math.max(6, Math.min(18, headerFontSize + 3))
+  const lineCountLabel = `${lines.length} 行`
+  const overscan = 12
+  const firstVisibleLine = Math.max(0, Math.floor((safeScrollOffset - topPadding) / rowHeight) - overscan)
+  const visibleLineCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
+  const lastVisibleLine = Math.min(lines.length, firstVisibleLine + visibleLineCount)
+  const visibleLines = lines.slice(firstVisibleLine, lastVisibleLine)
+
+  return (
+    <div
+      className="lovart-subtitle-preview-overlay"
+      style={{
+        left: `${overlay.left}px`,
+        top: `${overlay.top}px`,
+        width: `${overlay.width}px`,
+        height: `${overlay.height}px`,
+        transform: overlay.angle ? `rotate(${overlay.angle}rad)` : undefined
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          inset: `${selectedPreviewInset}px`,
+          overflow: 'hidden',
+          background: '#ffffff',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
+      >
+        <div
+          ref={(el) => {
+            if (el && el.scrollTop !== safeScrollOffset) {
+              el.scrollTop = safeScrollOffset
+            }
+          }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'scroll',
+            overflowX: 'hidden',
+            background: '#ffffff',
+            fontFamily: '"SF Mono", Menlo, Monaco, Consolas, "Courier New", monospace',
+            fontSize: `${fontSize}px`,
+            lineHeight,
+            tabSize: 4,
+            pointerEvents: 'none'
+          }}
+        >
+          <div
+            style={{
+              position: 'relative',
+              minHeight: '100%',
+              height: `${Math.max(contentHeight, viewportHeight)}px`,
+              background: '#ffffff'
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                width: `${gutterWidth}px`,
+                height: '100%',
+                background: '#ffffff',
+                borderRight: '1px solid #f0f0f0',
+                boxSizing: 'border-box'
+              }}
+            />
+            {visibleLines.map((line, localIndex) => {
+              const index = firstVisibleLine + localIndex
+              const top = topPadding + index * rowHeight
+              const kind = classifySrtLine(line)
+              return (
+                <div
+                  key={index}
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    top: `${top}px`,
+                    height: `${rowHeight}px`,
+                    display: 'grid',
+                    gridTemplateColumns: `${gutterWidth}px minmax(0, 1fr)`,
+                    alignItems: 'start'
+                  }}
+                >
+                  <div
+                    style={{
+                      height: `${rowHeight}px`,
+                      paddingRight: `${Math.round(fontSize * 0.5)}px`,
+                      textAlign: 'right',
+                      color: '#858585',
+                      userSelect: 'none',
+                      boxSizing: 'border-box',
+                      whiteSpace: 'pre'
+                    }}
+                  >
+                    {index + 1}
+                  </div>
+                  <div
+                    style={{
+                      height: `${rowHeight}px`,
+                      paddingLeft: `${Math.round(fontSize * 0.7)}px`,
+                      paddingRight: `${Math.round(fontSize * 0.9)}px`,
+                      color: kind === 'text' ? '#2d2d2d' : undefined,
+                      whiteSpace: 'pre',
+                      boxSizing: 'border-box',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    {line ? renderHighlightedSrtLine(line, kind) : '​'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+      {overlay.width >= 28 ? (
+        <div
+          className="lovart-image-header"
+          style={{
+            top: `-${headerOffset}px`,
+            fontSize: `${headerFontSize}px`
+          }}
+        >
+          <div className="lovart-image-header-name">
+            <span style={{ fontSize: '0.9em' }}>📝</span>
+            <span className="lovart-image-header-name-text">{overlay.fileName}</span>
+          </div>
+          {overlay.width >= 90 ? <div className="lovart-image-header-size">{lineCountLabel}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function VideoCanvasOverlay({ video, isHovered, onExpand }) {
   const hoverVideoRef = useRef(null)
   const [isHoverVideoReady, setIsHoverVideoReady] = useState(false)
@@ -1281,9 +1765,24 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
     if (!isHovered) return undefined
     const element = hoverVideoRef.current
     if (!element) return undefined
-    element.muted = true
-    element.defaultMuted = true
-    void element.play().catch(() => {})
+    // Hover previews play with audio like Youtube-AGI. Browsers may reject
+    // unmuted autoplay, so fall back to muted playback and unmute right after
+    // play succeeds.
+    const enableAudio = () => {
+      element.defaultMuted = false
+      element.muted = false
+      element.volume = 1
+    }
+    enableAudio()
+    void element.play().then(enableAudio).catch(() => {
+      element.muted = true
+      element.defaultMuted = true
+      void element.play()
+        .then(() => {
+          window.setTimeout(enableAudio, 0)
+        })
+        .catch(() => {})
+    })
     return () => {
       try {
         element.pause()
@@ -1299,18 +1798,21 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
   const showOverlayUI = minDim >= 60
   const iconScale = Math.max(0.5, Math.min(1, minDim / 200))
   const durationLabel = formatPlaybackDuration(video.duration)
+  const placementStyle = {
+    left: `${video.left}px`,
+    top: `${video.top}px`,
+    width: `${video.width}px`,
+    height: `${video.height}px`,
+    transform: video.angle ? `rotate(${video.angle}rad)` : undefined
+  }
 
+  // Media (poster + hover video) paints at z-index 1 so the Excalidraw
+  // selection layer (interactive canvas, z 2) can draw the selection border
+  // over it; the interactive controls live in a separate sibling at z 3,
+  // mirroring Youtube-AGI's videoLayer (z1) / overlay portal (z3) split.
   return (
-    <div
-      className="lovart-video-playback-overlay"
-      style={{
-        left: `${video.left}px`,
-        top: `${video.top}px`,
-        width: `${video.width}px`,
-        height: `${video.height}px`,
-        transform: video.angle ? `rotate(${video.angle}rad)` : undefined
-      }}
-    >
+    <>
+    <div className="lovart-video-playback-overlay" style={placementStyle}>
       {isRenderableVideoPosterDataURL(video.posterDataURL) ? (
         <img className="lovart-video-playback-media" src={video.posterDataURL} draggable={false} alt="" />
       ) : null}
@@ -1320,8 +1822,6 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
           className="lovart-video-playback-media"
           src={video.sourceURL}
           loop
-          muted
-          defaultMuted
           playsInline
           preload="auto"
           onLoadedData={() => setIsHoverVideoReady(true)}
@@ -1329,6 +1829,8 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
           style={{ opacity: isHoverVideoReady ? 1 : 0 }}
         />
       ) : null}
+    </div>
+    <div className="lovart-video-playback-ui" style={placementStyle}>
       {isHovered && showOverlayUI && !video.isSelected ? <div className="lovart-video-hover-gradient" /> : null}
       {!isHovered && showOverlayUI ? (
         <div
@@ -1365,6 +1867,14 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
             width: `${Math.round(30 * iconScale)}px`,
             height: `${Math.round(30 * iconScale)}px`
           }}
+          onPointerDown={(event) => {
+            // Fire on pointerdown: the button unmounts when the hover state is
+            // cleared mid-click, so waiting for the click event can lose the
+            // interaction entirely.
+            event.preventDefault()
+            event.stopPropagation()
+            onExpand(video)
+          }}
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()
@@ -1379,6 +1889,7 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
         </button>
       ) : null}
     </div>
+    </>
   )
 }
 
@@ -1469,8 +1980,33 @@ function createImageElementRecord({ fileId, bounds, index, customData }) {
   }
 }
 
+// Target zoom when the canvas zooms toward a freshly inserted generator frame.
+// Youtube-AGI uses 1.25 for the tall subtitle/silence-cut generators
+// (SUBTITLE_GENERATOR_CREATE_ZOOM) and 2 for image/video.
+function generatorCreateZoomFor(kind) {
+  return kind === 'subtitle' || kind === 'silenceCut' ? 1.25 : 2
+}
+
+// Vertical viewport space to reserve for the input panel below the frame.
+function generatorPanelReserveFor(kind) {
+  if (kind === 'image') return 195
+  if (kind === 'video') return 280
+  return 300
+}
+
+// Largest zoom (capped at desiredZoom) at which the frame plus its panel and
+// the top toolbar reserve fit fully inside the viewport.
+function fittedGeneratorZoom(kind, size, viewportWidth, viewportHeight, desiredZoom) {
+  const availableHeight = Math.max(80, viewportHeight - GENERATOR_FRAME_TOP_RESERVE - generatorPanelReserveFor(kind) - 16)
+  const availableWidth = Math.max(120, viewportWidth - GENERATOR_FRAME_EDGE_MARGIN * 2)
+  const fit = Math.min(availableHeight / size.height, availableWidth / size.width)
+  return Math.max(0.2, Math.min(desiredZoom, fit))
+}
+
 function frameSizeFor(kind, form) {
   if (kind === 'video') return VIDEO_ASPECTS[form.videoAspectRatio] ?? VIDEO_ASPECTS['16:9']
+  if (kind === 'subtitle') return { width: 205, height: 364 }
+  if (kind === 'silenceCut') return { width: 364, height: 205 }
   const option = IMAGE_ASPECTS[form.aspectRatio] ?? IMAGE_ASPECTS['1:1']
   return {
     width: Math.max(140, Math.min(980, Math.round(option.baseWidth * 0.25))),
@@ -1490,6 +2026,10 @@ export default function App() {
   const [frameOverlays, setFrameOverlays] = useState([])
   const [selectedImageOverlays, setSelectedImageOverlays] = useState([])
   const [videoPlaybackOverlays, setVideoPlaybackOverlays] = useState([])
+  const [subtitlePreviewOverlays, setSubtitlePreviewOverlays] = useState([])
+  const [subtitleScrollOffsets, setSubtitleScrollOffsets] = useState({})
+  const subtitlePreviewOverlaysRef = useRef([])
+  const [silenceCutAdvancedOpen, setSilenceCutAdvancedOpen] = useState(false)
   const [hoveredVideoPlaybackId, setHoveredVideoPlaybackId] = useState('')
   const [expandedVideoPlayback, setExpandedVideoPlayback] = useState(null)
   const [pendingPanelFrame, setPendingPanelFrame] = useState(null)
@@ -1698,10 +2238,17 @@ export default function App() {
     [saveCanvas]
   )
 
-  const syncGeneratorUi = useCallback((scene) => {
+  const refreshOverlayStates = useCallback((scene) => {
     setFrameOverlays(buildFrameOverlays(scene))
     setSelectedImageOverlays(buildSelectedImageOverlays(scene))
     setVideoPlaybackOverlays(buildVideoPlaybackOverlays(scene))
+    const subtitleOverlays = buildSubtitlePreviewOverlays(scene)
+    subtitlePreviewOverlaysRef.current = subtitleOverlays
+    setSubtitlePreviewOverlays(subtitleOverlays)
+  }, [])
+
+  const syncGeneratorUi = useCallback((scene) => {
+    refreshOverlayStates(scene)
     const elementsById = new Map(scene.elements.map((element) => [element.id, element]))
     const selectedIds = getSelectedIds(scene.appState)
     const selectedFrameId = selectedIds.find((id) => isGeneratorFrame(elementsById.get(id))) ?? ''
@@ -1771,7 +2318,7 @@ export default function App() {
       setSelectedGeneratedResult(null)
       setOpenMenu(null)
     }
-  }, [])
+  }, [refreshOverlayStates])
 
   useEffect(() => {
     if (initialScene) syncGeneratorUi(initialScene)
@@ -1865,7 +2412,7 @@ export default function App() {
               customData: {
                 ...(element.customData ?? {}),
                 ...sourceCustomData,
-                ...(isVideoGeneratorFrame(sourceForData) ? { [VIDEO_GENERATOR_FRAME_TAG]: true } : { [GENERATOR_FRAME_TAG]: true }),
+                [generatorFrameTagFor(getGeneratorKind(sourceForData))]: true,
                 role: 'frame'
               },
               version: (Number(element.version) || 1) + 1,
@@ -1890,9 +2437,7 @@ export default function App() {
           setPendingPanelFrame(null)
           setSelectedGeneratedResult(null)
           setOpenMenu(null)
-          setFrameOverlays(buildFrameOverlays(nextScene))
-          setSelectedImageOverlays(buildSelectedImageOverlays(nextScene))
-          setVideoPlaybackOverlays(buildVideoPlaybackOverlays(nextScene))
+          refreshOverlayStates(nextScene)
           scheduleSelectionSave(nextScene)
           scheduleCanvasSave(nextScene)
           window.setTimeout(() => {
@@ -1956,7 +2501,7 @@ export default function App() {
         scheduleCanvasSave(scene)
       }
     },
-    [api, scheduleCanvasSave, scheduleSelectionSave, syncGeneratorUi]
+    [api, refreshOverlayStates, scheduleCanvasSave, scheduleSelectionSave, syncGeneratorUi]
   )
 
   const applyRemoteScene = useCallback(
@@ -2183,9 +2728,7 @@ export default function App() {
         })
         const nextScene = createScene(nextElements, nextAppState, api.getFiles())
         latestSceneRef.current = nextScene
-        setFrameOverlays(buildFrameOverlays(nextScene))
-        setSelectedImageOverlays(buildSelectedImageOverlays(nextScene))
-        setVideoPlaybackOverlays(buildVideoPlaybackOverlays(nextScene))
+        refreshOverlayStates(nextScene)
         scheduleCanvasSave(nextScene)
         scheduleSelectionSave(nextScene)
       }
@@ -2253,7 +2796,7 @@ export default function App() {
         delete window.__lovartHandleClipboardShortcut
       }
     }
-  }, [api, frameForm, openToolbarMediaPicker, scheduleCanvasSave, scheduleSelectionSave])
+  }, [api, frameForm, openToolbarMediaPicker, refreshOverlayStates, scheduleCanvasSave, scheduleSelectionSave])
 
   useEffect(() => {
     if (!api) return undefined
@@ -2495,12 +3038,10 @@ export default function App() {
       }, 0)
       const nextScene = createScene(nextElements, api.getAppState(), api.getFiles())
       latestSceneRef.current = nextScene
-      setFrameOverlays(buildFrameOverlays(nextScene))
-      setSelectedImageOverlays(buildSelectedImageOverlays(nextScene))
-      setVideoPlaybackOverlays(buildVideoPlaybackOverlays(nextScene))
+      refreshOverlayStates(nextScene)
       scheduleCanvasSave(nextScene)
     },
-    [api, scheduleCanvasSave]
+    [api, refreshOverlayStates, scheduleCanvasSave]
   )
 
   const updateFrameForm = useCallback(
@@ -2652,6 +3193,10 @@ export default function App() {
           next = { ...current, videoReferenceVideos: [...normalizeAssetList(current.videoReferenceVideos), asset].slice(-3) }
         } else if (target === 'videoReferenceAudios') {
           next = { ...current, videoReferenceAudios: [...normalizeAssetList(current.videoReferenceAudios), asset].slice(-3) }
+        } else if (target === 'subtitleAudio') {
+          next = { ...current, subtitleAudio: asset }
+        } else if (target === 'silenceCutVideo') {
+          next = { ...current, silenceCutVideo: asset }
         } else {
           next = { ...current, videoReferenceImages: [...normalizeAssetList(current.videoReferenceImages), asset].slice(-3) }
         }
@@ -3086,7 +3631,7 @@ export default function App() {
             strokeWidth: GENERATOR_FRAME_STROKE_WIDTH,
             roughness: 0,
             customData: {
-              ...(kind === 'video' ? { [VIDEO_GENERATOR_FRAME_TAG]: true } : { [GENERATOR_FRAME_TAG]: true }),
+              [generatorFrameTagFor(kind)]: true,
               role: 'frame',
               ...(kind === 'image'
                 ? {
@@ -3107,7 +3652,17 @@ export default function App() {
       const nextElements = [...elements, nextFrame]
       const viewportWidth = Number(appState.width) || 0
       const viewportHeight = Number(appState.height) || 0
-      const targetScreenRatio = kind === 'video' ? 0.36 : 0.44
+      const targetScreenRatio = kind === 'video' || kind === 'silenceCut' ? 0.36 : kind === 'subtitle' ? 0.4 : 0.44
+      const panelReserve = generatorPanelReserveFor(kind)
+      // Screen Y for the frame center: prefer the kind's ratio, but clamp so
+      // the frame clears the top toolbar and leaves room for the panel below.
+      const frameScreenYFor = (zoom) => {
+        const displayHalf = (size.height * zoom) / 2
+        return Math.max(
+          GENERATOR_FRAME_TOP_RESERVE + displayHalf + 8,
+          Math.min(viewportHeight * targetScreenRatio, Math.max(120, viewportHeight - panelReserve - displayHalf - 8))
+        )
+      }
       let nextScrollX = curScrollX
       let nextScrollY = curScrollY
       let nextZoom = curZoom
@@ -3117,19 +3672,25 @@ export default function App() {
       let targetZoom = curZoom
 
       if (viewportWidth > 0 && viewportHeight > 0) {
+        const frameCenterX = frameX + size.width / 2
+        const frameCenterY = frameY + size.height / 2
+        const targetScreenX = viewportWidth / 2
         if (viewportMoved) {
-          const useZoom = wasOverlapping ? 2 : curZoom
-          if (wasOverlapping) {
-            targetZoom = 2
+          // Zoom toward the frame when it dodged overlaps, or zoom out when
+          // the current zoom cannot fit frame + panel inside the viewport.
+          const fitZoom = fittedGeneratorZoom(
+            kind,
+            size,
+            viewportWidth,
+            viewportHeight,
+            wasOverlapping ? generatorCreateZoomFor(kind) : curZoom
+          )
+          if (wasOverlapping || curZoom > fitZoom + 0.01) {
+            targetZoom = fitZoom
             shouldAnimate = true
           }
-          const frameCenterX = frameX + size.width / 2
-          const frameCenterY = frameY + size.height / 2
-          const targetScreenX = viewportWidth / 2
-          const targetScreenY = Math.min(
-            viewportHeight * targetScreenRatio,
-            Math.max(120, viewportHeight - (kind === 'video' ? 280 : 195))
-          )
+          const useZoom = shouldAnimate ? targetZoom : curZoom
+          const targetScreenY = frameScreenYFor(useZoom)
           if (shouldAnimate) {
             targetScrollX = targetScreenX / useZoom - frameCenterX
             targetScrollY = targetScreenY / useZoom - frameCenterY
@@ -3138,17 +3699,12 @@ export default function App() {
             nextScrollY = targetScreenY / useZoom - frameCenterY
           }
         } else {
+          const frameTopScreen = (frameY + curScrollY) * curZoom
           const frameBottomScreen = (frameY + size.height + curScrollY) * curZoom
-          if (frameBottomScreen + 200 > viewportHeight) {
+          if (frameBottomScreen + panelReserve > viewportHeight || frameTopScreen < GENERATOR_FRAME_TOP_RESERVE) {
             shouldAnimate = true
-            targetZoom = 2
-            const frameCenterX = frameX + size.width / 2
-            const frameCenterY = frameY + size.height / 2
-            const targetScreenX = viewportWidth / 2
-            const targetScreenY = Math.min(
-              viewportHeight * targetScreenRatio,
-              Math.max(120, viewportHeight - (kind === 'video' ? 280 : 195))
-            )
+            targetZoom = fittedGeneratorZoom(kind, size, viewportWidth, viewportHeight, generatorCreateZoomFor(kind))
+            const targetScreenY = frameScreenYFor(targetZoom)
             targetScrollX = targetScreenX / targetZoom - frameCenterX
             targetScrollY = targetScreenY / targetZoom - frameCenterY
           }
@@ -3213,9 +3769,7 @@ export default function App() {
                 api.getFiles()
               )
               latestSceneRef.current = animatedScene
-              setFrameOverlays(buildFrameOverlays(animatedScene))
-              setSelectedImageOverlays(buildSelectedImageOverlays(animatedScene))
-              setVideoPlaybackOverlays(buildVideoPlaybackOverlays(animatedScene))
+              refreshOverlayStates(animatedScene)
               if (rawProgress < 1) {
                 requestAnimationFrame(animateStep)
               } else {
@@ -3260,14 +3814,12 @@ export default function App() {
 
       const nextScene = createScene(nextElements, nextAppState, api.getFiles())
       latestSceneRef.current = nextScene
-      setFrameOverlays(buildFrameOverlays(nextScene))
-      setSelectedImageOverlays(buildSelectedImageOverlays(nextScene))
-      setVideoPlaybackOverlays(buildVideoPlaybackOverlays(nextScene))
+      refreshOverlayStates(nextScene)
       scheduleCanvasSave(nextScene)
       scheduleSelectionSave(nextScene)
       return { frame: nextFrame, scene: nextScene }
     },
-    [api, scheduleCanvasSave, scheduleSelectionSave]
+    [api, refreshOverlayStates, scheduleCanvasSave, scheduleSelectionSave]
   )
 
   const createGeneratorFrame = useCallback(
@@ -3457,9 +4009,7 @@ export default function App() {
         }, 0)
         const errorScene = createScene(nextElements, { ...api.getAppState(), selectedElementIds }, api.getFiles())
         latestSceneRef.current = errorScene
-        setFrameOverlays(buildFrameOverlays(errorScene))
-        setSelectedImageOverlays(buildSelectedImageOverlays(errorScene))
-        setVideoPlaybackOverlays(buildVideoPlaybackOverlays(errorScene))
+        refreshOverlayStates(errorScene)
         scheduleCanvasSave(errorScene)
         scheduleSelectionSave(errorScene)
       }
@@ -3470,7 +4020,203 @@ export default function App() {
         return next
       })
     }
-  }, [api, applyRemoteScene, frameForm, generatingFrameIds, insertGeneratorFrame, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, selectedGeneratedResult, updateActiveFrameElement])
+  }, [api, applyRemoteScene, frameForm, generatingFrameIds, insertGeneratorFrame, refreshOverlayStates, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, selectedGeneratedResult, updateActiveFrameElement])
+
+  // Generation for the utility frames (SRT subtitles / silence cut). The server
+  // replaces the anchor frame with the result card/video and broadcasts the new
+  // canvas, mirroring the image/video generation flow.
+  const runUtilityGeneration = useCallback(async () => {
+    if (!api) return
+    const anchorElementId = activeFrameIdRef.current
+    if (!anchorElementId || generatingFrameIds.has(anchorElementId)) return
+    const scene = latestSceneRef.current
+    const anchorElement = scene.elements.find((element) => element.id === anchorElementId)
+    if (!anchorElement || !isGeneratorFrame(anchorElement)) return
+    const kind = getGeneratorKind(anchorElement)
+    if (kind !== 'subtitle' && kind !== 'silenceCut') return
+
+    const savedForm = { ...frameForm }
+    if (kind === 'subtitle') {
+      if (!savedForm.subtitleAudio?.path) {
+        setGenerationError('音声ファイルを添付してください。')
+        return
+      }
+      if (savedForm.subtitleMode === 'scripted' && !savedForm.subtitleScriptText.trim()) {
+        setGenerationError('台本ありモードでは台本テキストを入力してください。')
+        return
+      }
+    } else if (!savedForm.silenceCutVideo?.path) {
+      setGenerationError('無音カットする動画を添付してください。')
+      return
+    }
+
+    updateActiveFrameElement(savedForm)
+    setOpenMenu(null)
+    setGenerationError('')
+    setGeneratingFrameIds((current) => new Set(current).add(anchorElementId))
+    setPendingPanelFrame(null)
+    setSelectedGeneratedResult(null)
+    activeFrameIdRef.current = ''
+    setActiveFrameId('')
+    suppressNextChangeRef.current = true
+    window.setTimeout(() => {
+      api.updateScene({
+        appState: { selectedElementIds: {} },
+        captureUpdate: CaptureUpdateAction.NEVER
+      })
+    }, 0)
+
+    try {
+      await saveCanvas(latestSceneRef.current)
+      const endpoint = kind === 'subtitle' ? GENERATE_SUBTITLES_ENDPOINT : SILENCE_CUT_ENDPOINT
+      const body =
+        kind === 'subtitle'
+          ? {
+              audioPath: savedForm.subtitleAudio.path,
+              scriptText: savedForm.subtitleMode === 'scripted' ? savedForm.subtitleScriptText : '',
+              mode: savedForm.subtitleMode,
+              lineCount: savedForm.subtitleLineCount,
+              maxCharsPerLine: savedForm.subtitleMaxChars,
+              holdSeconds: savedForm.subtitleHoldSeconds,
+              punctuationMode: savedForm.subtitlePunctuationMode,
+              fillerMode: savedForm.subtitleFillerMode,
+              durationSeconds: Number(savedForm.subtitleAudio.duration) || undefined,
+              anchorElementId,
+              placement: 'replace',
+              replaceAnchor: true,
+              fileName: `${(savedForm.subtitleAudio.name || 'subtitles').replace(/\.[^.]+$/, '')}.srt`
+            }
+          : {
+              videoPath: savedForm.silenceCutVideo.path,
+              detectSeconds: savedForm.silenceCutDetectSeconds,
+              thresholdDb: savedForm.silenceCutThresholdDb,
+              keepSeconds: savedForm.silenceCutKeepSeconds,
+              preMarginSeconds: savedForm.silenceCutPreMarginSeconds,
+              postMarginSeconds: savedForm.silenceCutPostMarginSeconds,
+              audioFadeSeconds: savedForm.silenceCutAudioFadeSeconds,
+              anchorElementId,
+              placement: 'replace',
+              replaceAnchor: true,
+              displayWidth: anchorElement.width,
+              displayHeight: anchorElement.height,
+              fileName: `${(savedForm.silenceCutVideo.name || 'video').replace(/\.[^.]+$/, '')}-cut.mp4`
+            }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `Generation failed: ${response.status}`)
+      }
+      const canvasResponse = await fetch(CANVAS_ENDPOINT)
+      if (canvasResponse.ok) {
+        const canvasPayload = await canvasResponse.json()
+        let nextScene = normalizeScene(canvasPayload.scene)
+        // The subtitle/silence-cut endpoints do not forward replaceAnchor, so
+        // the generator frame survives underneath the result. Delete it here
+        // and persist, completing the frame → result replacement.
+        if (!payload.replacedAnchor && nextScene.elements.some((element) => element.id === anchorElementId && isGeneratorFrame(element))) {
+          nextScene = {
+            ...nextScene,
+            elements: nextScene.elements.map((element) =>
+              element.id === anchorElementId
+                ? {
+                    ...element,
+                    isDeleted: true,
+                    version: (Number(element.version) || 1) + 1,
+                    versionNonce: Math.floor(Math.random() * 2 ** 31),
+                    updated: Date.now()
+                  }
+                : element
+            )
+          }
+          applyRemoteScene(nextScene, { force: true, applySelection: true })
+          await saveCanvas(latestSceneRef.current)
+        } else {
+          applyRemoteScene(nextScene, { force: true, applySelection: true })
+        }
+      }
+    } catch (error) {
+      setGenerationError(error.message)
+      const selectedElementIds = { [anchorElementId]: true }
+      activeFrameIdRef.current = anchorElementId
+      lastFocusedFrameIdRef.current = anchorElementId
+      setActiveFrameId(anchorElementId)
+      setActiveFrameKind(kind)
+      setSelectedGeneratedResult(null)
+      setFrameForm(savedForm)
+      suppressNextChangeRef.current = true
+      window.setTimeout(() => {
+        api.updateScene({
+          appState: { selectedElementIds },
+          captureUpdate: CaptureUpdateAction.NEVER
+        })
+      }, 0)
+      const errorScene = createScene(
+        api.getSceneElementsIncludingDeleted(),
+        { ...api.getAppState(), selectedElementIds },
+        api.getFiles()
+      )
+      latestSceneRef.current = errorScene
+      refreshOverlayStates(errorScene)
+      scheduleCanvasSave(errorScene)
+      scheduleSelectionSave(errorScene)
+    } finally {
+      setGeneratingFrameIds((current) => {
+        const next = new Set(current)
+        next.delete(anchorElementId)
+        return next
+      })
+    }
+  }, [api, applyRemoteScene, frameForm, generatingFrameIds, refreshOverlayStates, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, updateActiveFrameElement])
+
+  // Wheel over a subtitle result card scrolls its SRT preview instead of
+  // panning the canvas (Youtube-AGI parity). The overlay itself is
+  // pointer-events none, so the wheel lands on the Excalidraw canvas and is
+  // intercepted here by viewport-rect hit test.
+  useEffect(() => {
+    if (!api) return undefined
+    const root = document.querySelector('.excalidraw')
+    if (!root) return undefined
+    const onWheel = (event) => {
+      if (event.ctrlKey || event.metaKey) return
+      const overlays = subtitlePreviewOverlaysRef.current
+      if (!overlays || overlays.length === 0) return
+      const rootRect = root.getBoundingClientRect()
+      const pointX = event.clientX - rootRect.left
+      const pointY = event.clientY - rootRect.top
+      const hit = [...overlays].reverse().find((overlay) =>
+        pointX >= overlay.left && pointX <= overlay.left + overlay.width &&
+        pointY >= overlay.top && pointY <= overlay.top + overlay.height
+      )
+      if (!hit) return
+      const lines = srtLinesCache.get(hit.assetUrl)
+      if (!lines) return
+      const layout = getSubtitlePreviewLayout(lines.length, hit.width, hit.height, hit.zoom, hit.isSelected)
+      if (layout.maxScroll <= 0) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? hit.height * 0.85 : 1
+      const delta = (event.deltaY || event.deltaX) * deltaUnit
+      if (!Number.isFinite(delta) || delta === 0) return
+      setSubtitleScrollOffsets((prev) => {
+        const current = Number(prev[hit.id]) || 0
+        const nextValue = Math.max(0, Math.min(layout.maxScroll, current + delta))
+        if (Math.abs(nextValue - current) < 0.5) return prev
+        return { ...prev, [hit.id]: nextValue }
+      })
+    }
+    root.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => {
+      root.removeEventListener('wheel', onWheel, { capture: true })
+    }
+  }, [api])
 
   if (!initialScene) {
     return <main className="codex-excalidraw-status">Loading canvas...</main>
@@ -3516,8 +4262,9 @@ export default function App() {
       canUseVideoFrameTarget(frameForm.videoModel, frameForm.videoTab, 'end') &&
       (frameForm.videoStartFrame || frameForm.videoEndFrame)
   )
+  const isUtilityPanelKind = activeFrameKind === 'subtitle' || activeFrameKind === 'silenceCut'
   const panelPlacement = showPromptPanel
-    ? getPanelPlacementFromViewportTarget(activePanelTarget, activeFrameKind === 'video')
+    ? getPanelPlacementFromViewportTarget(activePanelTarget, activeFrameKind)
     : null
   const panelStyle = panelPlacement
     ? {
@@ -3595,12 +4342,57 @@ export default function App() {
           >
             <VideoGeneratorToolIcon />
           </button>
+          <button
+            type="button"
+            className="lovart-ai-button"
+            aria-label="SRTジェネレーター"
+            data-lovart-tooltip="SRTジェネレーター"
+            data-lovart-generator-kind="subtitle"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              createGeneratorFrame('subtitle')
+            }}
+          >
+            <SrtGeneratorToolIcon />
+          </button>
+          <button
+            type="button"
+            className="lovart-ai-button"
+            aria-label="無音カットジェネレーター"
+            data-lovart-tooltip="無音カットジェネレーター"
+            data-lovart-generator-kind="silenceCut"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              createGeneratorFrame('silenceCut')
+            }}
+          >
+            <SilenceCutGeneratorToolIcon />
+          </button>
         </div>
       ) : null}
 
       {frameOverlays.map((overlay) => {
         const isGenerating = generatingFrameIds.has(overlay.id)
         const isVideo = overlay.kind === 'video'
+        const isUtilityFrame = overlay.kind === 'subtitle' || overlay.kind === 'silenceCut'
+        const overlayTitle =
+          overlay.kind === 'video'
+            ? 'Video Generator'
+            : overlay.kind === 'subtitle'
+              ? 'SRT Generator'
+              : overlay.kind === 'silenceCut'
+                ? 'Silence Cut Generator'
+                : 'Image Generator'
         const overlayMetrics = getFrameOverlayMetrics(overlay.width, overlay.height)
         return (
           <div
@@ -3698,15 +4490,23 @@ export default function App() {
               >
                 <div className="lovart-frame-title">
                   {overlayMetrics.showTitleIcon ? <span>▣</span> : null}
-                  <span className="lovart-frame-title-text">{isVideo ? 'Video Generator' : 'Image Generator'}</span>
+                  <span className="lovart-frame-title-text">{overlayTitle}</span>
                 </div>
-                {overlayMetrics.showSize ? <div className="lovart-frame-size">{overlay.pixelWidth} x {overlay.pixelHeight}</div> : null}
+                {overlayMetrics.showSize && !isUtilityFrame ? <div className="lovart-frame-size">{overlay.pixelWidth} x {overlay.pixelHeight}</div> : null}
               </div>
             ) : null}
             <div className="lovart-frame-inner">
               {isGenerating ? <div className={`lovart-frame-generating-bg${isVideo ? ' video' : ''}`} /> : null}
               <div className="lovart-frame-center">
-                {isVideo ? <VideoCenterIcon size={overlayMetrics.iconSize} /> : <FrameCenterIcon size={overlayMetrics.iconSize} />}
+                {overlay.kind === 'subtitle' ? (
+                  <SrtCenterIcon size={overlayMetrics.iconSize} />
+                ) : overlay.kind === 'silenceCut' ? (
+                  <SilenceCutCenterIcon size={overlayMetrics.iconSize} />
+                ) : isVideo ? (
+                  <VideoCenterIcon size={overlayMetrics.iconSize} />
+                ) : (
+                  <FrameCenterIcon size={overlayMetrics.iconSize} />
+                )}
               </div>
               {isGenerating && overlayMetrics.showLoading ? (
                 <div
@@ -3733,6 +4533,10 @@ export default function App() {
           isHovered={hoveredVideoPlaybackId === video.id}
           onExpand={setExpandedVideoPlayback}
         />
+      ))}
+
+      {subtitlePreviewOverlays.map((overlay) => (
+        <SubtitleCanvasOverlay key={overlay.id} overlay={overlay} scrollOffset={subtitleScrollOffsets[overlay.id] || 0} />
       ))}
 
       {selectedImageOverlays.map((img) => {
@@ -3800,7 +4604,7 @@ export default function App() {
         />
       ) : null}
 
-      {showPromptPanel ? (
+      {showPromptPanel && !isUtilityPanelKind ? (
         <section
           className={`lovart-ai-panel${openMenuBlocksPrompt ? ' has-open-menu' : ''}`}
           style={panelStyle}
@@ -4318,6 +5122,405 @@ export default function App() {
               >
                 <LightningIcon />
                 {isCurrentFrameGenerating ? <span>Generating...</span> : <span>0</span>}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {showPromptPanel && activeFrameKind === 'subtitle' ? (
+        <section
+          className={`lovart-ai-panel lovart-utility-panel${openMenuBlocksPrompt ? ' has-open-menu' : ''}`}
+          style={panelStyle}
+          aria-label="SRT Generator"
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="lovart-prompt-wrap has-video-slots">
+            {frameForm.subtitleMode === 'scripted' ? (
+              <textarea
+                className="lovart-ai-prompt"
+                placeholder="台本テキストを貼り付けてください（音声と同じ内容）"
+                value={frameForm.subtitleScriptText}
+                onChange={(event) => updateFrameForm('subtitleScriptText', event.target.value)}
+                onFocus={() => setOpenMenu(null)}
+              />
+            ) : (
+              <div className="lovart-utility-hint">音声ファイルを添付してSRT字幕を生成します。</div>
+            )}
+            <div className={`lovart-video-frame-tray${frameForm.subtitleAudio ? ' is-open' : ''}`}>
+              <div className="lovart-video-slot start">
+                <button
+                  type="button"
+                  data-lovart-trigger="subtitle-audio"
+                  className={`lovart-add-frame-btn start lovart-audio-slot-btn${frameForm.subtitleAudio ? ' has-asset' : ''}`}
+                  title="音声をアップロード"
+                  onClick={() => {
+                    setOpenMenu(null)
+                    rememberGeneratorUploadFrame()
+                    videoFrameUploadTargetRef.current = 'subtitleAudio'
+                    if (videoFrameUploadInputRef.current) {
+                      videoFrameUploadInputRef.current.accept = getUploadTargetAccept('subtitleAudio')
+                      videoFrameUploadInputRef.current.multiple = false
+                      videoFrameUploadInputRef.current.click()
+                    }
+                  }}
+                >
+                  {frameForm.subtitleAudio ? (
+                    <>
+                      <AudioWaveIcon />
+                      <span className="lovart-audio-slot-duration">{formatAssetDuration(frameForm.subtitleAudio.duration)}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="lovart-add-plus">+</span>
+                      <span className="lovart-add-label">音声</span>
+                    </>
+                  )}
+                </button>
+                {frameForm.subtitleAudio ? (
+                  <button type="button" className="lovart-frame-del" onClick={() => patchFrameForm({ subtitleAudio: null })}>
+                    <CloseIcon />
+                  </button>
+                ) : null}
+              </div>
+              {frameForm.subtitleAudio?.name ? (
+                <span className="lovart-utility-asset-name">{frameForm.subtitleAudio.name}</span>
+              ) : null}
+            </div>
+          </div>
+          {generationError ? <div className="lovart-error">{generationError}</div> : null}
+          <div className="lovart-ai-bottom">
+            <div className="lovart-ai-left">
+              <div className="lovart-video-tabs">
+                {SUBTITLE_MODE_OPTIONS.map(([mode, label]) => (
+                  <button
+                    type="button"
+                    key={mode}
+                    className={frameForm.subtitleMode === mode ? 'is-selected' : ''}
+                    onClick={() => {
+                      setOpenMenu(null)
+                      updateFrameForm('subtitleMode', mode)
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="lovart-ai-right">
+              <div className="lovart-menu-wrap">
+                <button
+                  type="button"
+                  className="lovart-pill"
+                  data-lovart-trigger="subtitle-settings"
+                  onClick={() => setOpenMenu((current) => (current === 'subtitle-settings' ? null : 'subtitle-settings'))}
+                >
+                  <span>{`${frameForm.subtitleMaxChars}字合計・${frameForm.subtitleLineCount}行`}</span>
+                  <ChevronIcon />
+                </button>
+                {openMenu === 'subtitle-settings' ? (
+                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="subtitle-settings">
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">行数</div>
+                    </div>
+                    <div className="lovart-choice-row">
+                      {[1, 2].map((count) => (
+                        <button
+                          type="button"
+                          key={count}
+                          className={frameForm.subtitleLineCount === count ? 'is-selected' : ''}
+                          onClick={() =>
+                            patchFrameForm({
+                              subtitleLineCount: count,
+                              subtitleMaxChars: defaultSubtitleMaxCharsFor(count)
+                            })
+                          }
+                        >
+                          {count}行
+                        </button>
+                      ))}
+                    </div>
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">最大文字数</div>
+                      <span>{frameForm.subtitleMaxChars}字</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="3"
+                      max="40"
+                      step="1"
+                      className="lovart-duration-slider"
+                      value={frameForm.subtitleMaxChars}
+                      style={sliderTrackStyle(frameForm.subtitleMaxChars, 3, 40)}
+                      onChange={(event) => updateFrameForm('subtitleMaxChars', Number(event.target.value))}
+                    />
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">ホールド秒</div>
+                      <span>{Number(frameForm.subtitleHoldSeconds).toFixed(1)}s</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="3"
+                      step="0.1"
+                      className="lovart-duration-slider"
+                      value={frameForm.subtitleHoldSeconds}
+                      style={sliderTrackStyle(frameForm.subtitleHoldSeconds, 0, 3)}
+                      onChange={(event) => updateFrameForm('subtitleHoldSeconds', Number(event.target.value))}
+                    />
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">句読点</div>
+                    </div>
+                    <div className="lovart-choice-row">
+                      {SUBTITLE_PUNCTUATION_OPTIONS.map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={frameForm.subtitlePunctuationMode === value ? 'is-selected' : ''}
+                          onClick={() => updateFrameForm('subtitlePunctuationMode', value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">フィラー</div>
+                    </div>
+                    <div className="lovart-choice-row">
+                      {SUBTITLE_FILLER_OPTIONS.map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={frameForm.subtitleFillerMode === value ? 'is-selected' : ''}
+                          onClick={() => updateFrameForm('subtitleFillerMode', value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className={`lovart-generate${isCurrentFrameGenerating ? ' is-generating' : ''}`}
+                disabled={!frameForm.subtitleAudio || isCurrentFrameGenerating}
+                onClick={runUtilityGeneration}
+              >
+                <LightningIcon />
+                {isCurrentFrameGenerating ? <span>Generating...</span> : <span>生成</span>}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {showPromptPanel && activeFrameKind === 'silenceCut' ? (
+        <section
+          className={`lovart-ai-panel lovart-utility-panel${openMenuBlocksPrompt ? ' has-open-menu' : ''}`}
+          style={panelStyle}
+          aria-label="Silence Cut Generator"
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="lovart-prompt-wrap has-video-slots">
+            <div className="lovart-utility-hint">動画を添付すると、無音部分を自動でカットします。</div>
+            <div className={`lovart-video-frame-tray${frameForm.silenceCutVideo ? ' is-open' : ''}`}>
+              <div className="lovart-video-slot start">
+                <button
+                  type="button"
+                  data-lovart-trigger="silence-cut-video"
+                  className={`lovart-add-frame-btn start${frameForm.silenceCutVideo ? ' has-asset' : ''}`}
+                  title="動画をアップロード"
+                  onClick={() => {
+                    setOpenMenu(null)
+                    rememberGeneratorUploadFrame()
+                    videoFrameUploadTargetRef.current = 'silenceCutVideo'
+                    if (videoFrameUploadInputRef.current) {
+                      videoFrameUploadInputRef.current.accept = getUploadTargetAccept('silenceCutVideo')
+                      videoFrameUploadInputRef.current.multiple = false
+                      videoFrameUploadInputRef.current.click()
+                    }
+                  }}
+                >
+                  {frameForm.silenceCutVideo ? (
+                    <>
+                      {isRenderableVideoPosterDataURL(frameForm.silenceCutVideo.thumbnail) ? (
+                        <img
+                          className="lovart-slot-thumb"
+                          src={frameForm.silenceCutVideo.thumbnail}
+                          alt={frameForm.silenceCutVideo.name || 'video'}
+                        />
+                      ) : null}
+                      <span className="lovart-slot-play">▶</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="lovart-add-plus">+</span>
+                      <span className="lovart-add-label">動画</span>
+                    </>
+                  )}
+                </button>
+                {frameForm.silenceCutVideo ? (
+                  <button type="button" className="lovart-frame-del" onClick={() => patchFrameForm({ silenceCutVideo: null })}>
+                    <CloseIcon />
+                  </button>
+                ) : null}
+              </div>
+              {frameForm.silenceCutVideo?.name ? (
+                <span className="lovart-utility-asset-name">
+                  {frameForm.silenceCutVideo.name}
+                  {frameForm.silenceCutVideo.duration ? ` (${formatAssetDuration(frameForm.silenceCutVideo.duration)})` : ''}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          {generationError ? <div className="lovart-error">{generationError}</div> : null}
+          <div className="lovart-ai-bottom">
+            <div className="lovart-ai-left">
+              <div className="lovart-menu-wrap">
+                <button
+                  type="button"
+                  className="lovart-pill"
+                  onClick={() => setOpenMenu((current) => (current === 'silence-cut-model' ? null : 'silence-cut-model'))}
+                >
+                  <span>{SILENCE_CUT_MODEL_LABEL}</span>
+                  <ChevronIcon />
+                </button>
+                {openMenu === 'silence-cut-model' ? (
+                  <div className="lovart-menu" data-lovart-menu="silence-cut-model">
+                    <div className="lovart-menu-header">モデル</div>
+                    <button type="button" onClick={() => setOpenMenu(null)}>
+                      <span>{SILENCE_CUT_MODEL_LABEL}</span>
+                      <span className="menu-check">✓</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="lovart-ai-right">
+              <div className="lovart-menu-wrap">
+                <button
+                  type="button"
+                  className="lovart-pill"
+                  data-lovart-trigger="silence-cut-settings"
+                  onClick={() => setOpenMenu((current) => (current === 'silence-cut-settings' ? null : 'silence-cut-settings'))}
+                >
+                  <span>{`${formatSecondsValue(frameForm.silenceCutDetectSeconds)}・${frameForm.silenceCutThresholdDb}dB`}</span>
+                  <ChevronIcon />
+                </button>
+                {openMenu === 'silence-cut-settings' ? (
+                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="silence-cut-settings">
+                    <div className="lovart-menu-header">カットの強さ</div>
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">無音検出秒数</div>
+                      <span>{formatSecondsValue(frameForm.silenceCutDetectSeconds)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="2"
+                      step="0.05"
+                      className="lovart-duration-slider"
+                      value={frameForm.silenceCutDetectSeconds}
+                      style={sliderTrackStyle(frameForm.silenceCutDetectSeconds, 0.3, 2)}
+                      onChange={(event) => updateFrameForm('silenceCutDetectSeconds', Number(event.target.value))}
+                    />
+                    <div className="lovart-setting-row">
+                      <div className="lovart-menu-header">残す秒数</div>
+                      <span>{formatSecondsValue(frameForm.silenceCutKeepSeconds)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      className="lovart-duration-slider"
+                      value={frameForm.silenceCutKeepSeconds}
+                      style={sliderTrackStyle(frameForm.silenceCutKeepSeconds, 0, 1)}
+                      onChange={(event) => updateFrameForm('silenceCutKeepSeconds', Number(event.target.value))}
+                    />
+                    <button
+                      type="button"
+                      className="lovart-advanced-toggle"
+                      onClick={() => setSilenceCutAdvancedOpen((current) => !current)}
+                    >
+                      詳細設定 {silenceCutAdvancedOpen ? '▲' : '▼'}
+                    </button>
+                    {silenceCutAdvancedOpen ? (
+                      <>
+                        <div className="lovart-setting-row">
+                          <div className="lovart-menu-header">音量判定</div>
+                          <span>{frameForm.silenceCutThresholdDb}dB</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="-60"
+                          max="-20"
+                          step="1"
+                          className="lovart-duration-slider"
+                          value={frameForm.silenceCutThresholdDb}
+                          style={sliderTrackStyle(frameForm.silenceCutThresholdDb, -60, -20)}
+                          onChange={(event) => updateFrameForm('silenceCutThresholdDb', Number(event.target.value))}
+                        />
+                        <div className="lovart-setting-row">
+                          <div className="lovart-menu-header">前マージン</div>
+                          <span>{formatSecondsValue(frameForm.silenceCutPreMarginSeconds)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="0.3"
+                          step="0.01"
+                          className="lovart-duration-slider"
+                          value={frameForm.silenceCutPreMarginSeconds}
+                          style={sliderTrackStyle(frameForm.silenceCutPreMarginSeconds, 0.05, 0.3)}
+                          onChange={(event) => updateFrameForm('silenceCutPreMarginSeconds', Number(event.target.value))}
+                        />
+                        <div className="lovart-setting-row">
+                          <div className="lovart-menu-header">後マージン</div>
+                          <span>{formatSecondsValue(frameForm.silenceCutPostMarginSeconds)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="0.3"
+                          step="0.01"
+                          className="lovart-duration-slider"
+                          value={frameForm.silenceCutPostMarginSeconds}
+                          style={sliderTrackStyle(frameForm.silenceCutPostMarginSeconds, 0.05, 0.3)}
+                          onChange={(event) => updateFrameForm('silenceCutPostMarginSeconds', Number(event.target.value))}
+                        />
+                        <div className="lovart-setting-row">
+                          <div className="lovart-menu-header">フェード</div>
+                          <span>{formatSecondsValue(frameForm.silenceCutAudioFadeSeconds)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="0.1"
+                          step="0.01"
+                          className="lovart-duration-slider"
+                          value={frameForm.silenceCutAudioFadeSeconds}
+                          style={sliderTrackStyle(frameForm.silenceCutAudioFadeSeconds, 0, 0.1)}
+                          onChange={(event) => updateFrameForm('silenceCutAudioFadeSeconds', Number(event.target.value))}
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className={`lovart-generate${isCurrentFrameGenerating ? ' is-generating' : ''}`}
+                disabled={!frameForm.silenceCutVideo || isCurrentFrameGenerating}
+                onClick={runUtilityGeneration}
+              >
+                <LightningIcon />
+                {isCurrentFrameGenerating ? <span>Generating...</span> : <span>生成</span>}
               </button>
             </div>
           </div>
