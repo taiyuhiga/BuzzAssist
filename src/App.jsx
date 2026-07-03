@@ -110,8 +110,8 @@ const DEFAULT_FRAME_FORM = {
   subtitleAudio: null,
   silenceCutModel: 'ffmpeg-local',
   silenceCutInstruction: '',
-  silenceCutFillerRemoval: 50,
-  silenceCutCoughRemoval: 50,
+  silenceCutFillerRemoval: 40,
+  silenceCutCoughRemoval: 0,
   silenceCutRetakeRemoval: 0,
   silenceCutVideo: null,
   silenceCutDetectSeconds: 0.6,
@@ -152,10 +152,24 @@ const SILENCE_CUT_MODEL_OPTIONS = [
 // AI cleanup intensity presets (オフ/弱/中/強), matching Youtube-AGI
 const SILENCE_CUT_INTENSITY_OPTIONS = [
   [0, 'オフ'],
-  [25, '弱'],
-  [50, '中'],
-  [80, '強']
+  [30, '弱'],
+  [60, '中'],
+  [90, '強']
 ]
+
+// Same level mapping as the BuzzAssist desktop app: stored intensities from
+// older sessions still highlight the nearest level.
+function silenceCutAiLevelLabel(value) {
+  const parsed = Number(value) || 0
+  if (parsed <= 0) return 'オフ'
+  if (parsed < 45) return '弱'
+  if (parsed < 75) return '中'
+  return '強'
+}
+
+function formatSilenceCutSecondsLabel(value) {
+  return `${Math.round(Number(value) * 100) / 100}秒`
+}
 
 function defaultSubtitleMaxCharsFor(lineCount) {
   return lineCount === 1 ? 20 : 30
@@ -186,18 +200,47 @@ const VIDEO_ASPECTS = {
 }
 
 // Lovart-routed models reuse the settings gating of the same family's
-// BuzzAssist/local variant; Lovart-only families get generic gating via the
-// 'lovart-generic' sentinel.
+// BuzzAssist/local variant. Lovart-only models that behave like a known
+// family alias to it; the rest keep their own id and get explicit cases in
+// the gating helpers below.
+const LOVART_GATING_ALIASES = {
+  'lovart-nano-banana-pro': 'nano-banana-2',
+  'lovart-nano-banana-2-lite': 'nano-banana-2',
+  'lovart-nano-banana': 'nano-banana-2',
+  'lovart-gpt-image-1-5': 'gpt-image-2',
+  'lovart-seedream-v4-5': 'seedream-v5-lite',
+  'lovart-seedream-v4': 'seedream-v5-lite',
+  'lovart-kling-omni-v1': 'kling-v3',
+  'lovart-seedance-2-mini': 'seedance-2',
+  'lovart-seedance-pro-1-5': 'seedance-2'
+}
+
 function resolveGatingImageModel(model) {
   if (!String(model || '').startsWith('lovart-')) return model
+  if (LOVART_GATING_ALIASES[model]) return LOVART_GATING_ALIASES[model]
   const family = imageFamilyForModel(model)
-  return family?.routes?.buzzassist ?? family?.routes?.codex ?? family?.routes?.hermes ?? 'lovart-generic'
+  return family?.routes?.buzzassist ?? family?.routes?.codex ?? family?.routes?.hermes ?? model
 }
 
 function resolveGatingVideoModel(model) {
   if (!String(model || '').startsWith('lovart-')) return model
+  if (LOVART_GATING_ALIASES[model]) return LOVART_GATING_ALIASES[model]
   const family = videoFamilyForModel(model)
-  return family?.routes?.buzzassist ?? family?.routes?.hermes ?? 'lovart-generic'
+  return family?.routes?.buzzassist ?? family?.routes?.hermes ?? model
+}
+
+// Models with a fixed duration menu (buttons) instead of the free slider.
+const VIDEO_DURATION_CHOICES = {
+  'kling-v2-6': ['5', '10'],
+  'lovart-veo-3-1': ['4', '6', '8'],
+  'lovart-veo-3-1-fast': ['4', '6', '8'],
+  'lovart-veo-3': ['4', '6', '8'],
+  'lovart-hailuo-2-3': ['6', '10'],
+  'lovart-vidu-q2': ['4', '8']
+}
+
+function getVideoDurationChoices(model) {
+  return VIDEO_DURATION_CHOICES[resolveGatingVideoModel(model)] ?? null
 }
 
 function isGrokVideoModel(model) {
@@ -285,6 +328,9 @@ function supportsGenerateAudio(model) {
 function getVideoAspectRatioOptions(model) {
   if (isSeedanceModel(model)) return SEEDANCE_VIDEO_ASPECT_RATIO_OPTIONS
   if (isGrokVideoModel(model)) return GROK_VIDEO_ASPECT_RATIO_OPTIONS
+  const gating = resolveGatingVideoModel(model)
+  if (/^lovart-veo/.test(gating)) return ['16:9', '9:16']
+  if (gating === 'lovart-hailuo-2-3') return ['16:9', '9:16', '1:1']
   return VIDEO_ASPECT_RATIO_OPTIONS
 }
 
@@ -305,7 +351,7 @@ function getVideoDurationRange(model) {
   if (isSeedanceModel(model)) return { min: 4, max: 15, step: 1 }
   if (isGrokVideoModel(model)) return { min: 1, max: 15, step: 1 }
   if (model === 'kling-v2-6') return { min: 5, max: 10, step: 5 }
-  if (model === 'lovart-generic') return { min: 1, max: 15, step: 1 }
+  if (model === 'lovart-wan-2-6') return { min: 5, max: 15, step: 5 }
   return { min: 3, max: 15, step: 1 }
 }
 
@@ -322,9 +368,17 @@ function normalizeVideoTabForModel(model, value) {
 }
 
 function normalizeVideoDurationForModel(model, value) {
-  model = resolveGatingVideoModel(model)
-  if (model === 'kling-v2-6') {
-    return KLING_2_6_VIDEO_DURATIONS.includes(String(value)) ? String(value) : '5'
+  const choices = getVideoDurationChoices(model)
+  if (choices) {
+    const raw = String(value ?? '')
+    if (choices.includes(raw)) return raw
+    const parsed = Number.parseInt(raw, 10)
+    if (!Number.isFinite(parsed)) return choices[0]
+    let best = choices[0]
+    for (const choice of choices) {
+      if (Math.abs(Number(choice) - parsed) < Math.abs(Number(best) - parsed)) best = choice
+    }
+    return best
   }
   const { min, max } = getVideoDurationRange(model)
   const parsed = Number.parseInt(String(value ?? ''), 10)
@@ -2474,9 +2528,6 @@ export default function App() {
   const [managedSelectionActive, setManagedSelectionActive] = useState(false)
   const [lovartAuth, setLovartAuth] = useState(null)
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
-  // Lovart has no public rate card; costs learned from its confirmation
-  // quotes (per model) back the ⚡ estimate for the Lovart route.
-  const [lovartModelCosts, setLovartModelCosts] = useState({})
   const [bulkDownloading, setBulkDownloading] = useState(false)
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
@@ -2498,13 +2549,6 @@ export default function App() {
   const removeGlossaryTerm = (id) => persistGlossaryTerms((glossaryTerms ?? []).filter((term) => term.id !== id))
   const addGlossaryTerm = () => persistGlossaryTerms([...(glossaryTerms ?? []), { id: crypto.randomUUID(), from: '', to: '' }])
   const glossaryActiveCount = (glossaryTerms ?? []).filter((term) => term.from?.trim()).length
-  useEffect(() => {
-    if (activeFrameKind !== 'image' && activeFrameKind !== 'video') return
-    fetch('/api/lovart/model-costs')
-      .then((response) => response.json())
-      .then((costs) => setLovartModelCosts(costs && typeof costs === 'object' && !costs.error ? costs : {}))
-      .catch(() => {})
-  }, [activeFrameKind])
   const lovartAccessKeyInputRef = useRef(null)
   const lovartSecretKeyInputRef = useRef(null)
   const subtitlePreviewOverlaysRef = useRef([])
@@ -4860,10 +4904,8 @@ export default function App() {
     try {
       if (activeFrameKind === 'image') {
         const model = frameForm.imageModel
-        if (String(model).startsWith('lovart-')) {
-          const generationModel = generationModelFor(imageFamilyForModel(model), model, frameForm.quality)
-          return lovartModelCosts[generationModel]?.credits ?? lovartModelCosts[model]?.credits ?? null
-        }
+        // Lovart consumes Lovart-side credits, not BuzzAssist credits → 0 here.
+        if (String(model).startsWith('lovart-')) return 0
         if (model === 'gpt-image-2-codex') return 0
         return estimateCreditsForJob({
           kind: 'image',
@@ -4877,9 +4919,7 @@ export default function App() {
       }
       if (activeFrameKind === 'video') {
         const model = frameForm.videoModel
-        if (String(model).startsWith('lovart-')) {
-          return lovartModelCosts[model]?.credits ?? null
-        }
+        if (String(model).startsWith('lovart-')) return 0
         if (model === 'grok-imagine-video-hermes') return 0
         return estimateCreditsForJob({
           kind: 'video',
@@ -5941,9 +5981,9 @@ export default function App() {
                         <div className="lovart-menu-header">Duration</div>
                         <span>{frameForm.duration}s</span>
                       </div>
-                      {resolveGatingVideoModel(frameForm.videoModel) === 'kling-v2-6' ? (
+                      {getVideoDurationChoices(frameForm.videoModel) ? (
                         <div className="lovart-menu-grid compact">
-                          {KLING_2_6_VIDEO_DURATIONS.map((duration) => (
+                          {getVideoDurationChoices(frameForm.videoModel).map((duration) => (
                             <button
                               type="button"
                               key={duration}
@@ -6214,6 +6254,23 @@ export default function App() {
                 {openMenu === 'subtitle-settings' ? (
                   <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="subtitle-settings">
                     <div className="lovart-setting-row">
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">最大文字数</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="1つの字幕に表示する文字数の上限です。これを超える場合は字幕が分割されます。">i</span>
+                      </div>
+                      <span>{frameForm.subtitleMaxChars}字 合計</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="3"
+                      max="40"
+                      step="1"
+                      className="lovart-duration-slider"
+                      value={frameForm.subtitleMaxChars}
+                      style={sliderTrackStyle(frameForm.subtitleMaxChars, 3, 40)}
+                      onChange={(event) => updateFrameForm('subtitleMaxChars', Number(event.target.value))}
+                    />
+                    <div className="lovart-setting-row">
                       <div className="lovart-menu-header">行数</div>
                     </div>
                     <div className="lovart-choice-row">
@@ -6234,22 +6291,11 @@ export default function App() {
                       ))}
                     </div>
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">最大文字数</div>
-                      <span>{frameForm.subtitleMaxChars}字</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="3"
-                      max="40"
-                      step="1"
-                      className="lovart-duration-slider"
-                      value={frameForm.subtitleMaxChars}
-                      style={sliderTrackStyle(frameForm.subtitleMaxChars, 3, 40)}
-                      onChange={(event) => updateFrameForm('subtitleMaxChars', Number(event.target.value))}
-                    />
-                    <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">ホールド秒</div>
-                      <span>{Number(frameForm.subtitleHoldSeconds).toFixed(1)}s</span>
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">最大表示時間</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="音声が終わった後も、その字幕を画面に残しておく最大の時間です。次の字幕が来る場合は、次の字幕を優先します。">i</span>
+                      </div>
+                      <span>{Number(frameForm.subtitleHoldSeconds).toFixed(2)}秒</span>
                     </div>
                     <input
                       type="range"
@@ -6262,7 +6308,7 @@ export default function App() {
                       onChange={(event) => updateFrameForm('subtitleHoldSeconds', Number(event.target.value))}
                     />
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">句読点</div>
+                      <div className="lovart-menu-header">字幕末尾の句読点</div>
                     </div>
                     <div className="lovart-choice-row">
                       {SUBTITLE_PUNCTUATION_OPTIONS.map(([value, label]) => (
@@ -6277,7 +6323,10 @@ export default function App() {
                       ))}
                     </div>
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">フィラー</div>
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">フィラー処理</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="えー・えっとなど明確なフィラーだけを処理します。こう・ちょっと・ねは文脈語として残します。">i</span>
+                      </div>
                     </div>
                     <div className="lovart-choice-row">
                       {SUBTITLE_FILLER_OPTIONS.map(([value, label]) => (
@@ -6423,41 +6472,18 @@ export default function App() {
                   data-lovart-trigger="silence-cut-settings"
                   onClick={() => setOpenMenu((current) => (current === 'silence-cut-settings' ? null : 'silence-cut-settings'))}
                 >
-                  <span>{`${formatSecondsValue(frameForm.silenceCutDetectSeconds)}・${frameForm.silenceCutThresholdDb}dB`}</span>
+                  <span>{`無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・残す ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`}</span>
                   <ChevronIcon />
                 </button>
                 {openMenu === 'silence-cut-settings' ? (
                   <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="silence-cut-settings">
-                    {frameForm.silenceCutModel === 'elevenlabs-scribe-v2' ? (
-                      <>
-                        <div className="lovart-menu-header">AIクリーンアップ</div>
-                        {[
-                          ['silenceCutFillerRemoval', 'フィラー削除'],
-                          ['silenceCutCoughRemoval', '咳・くしゃみ削除'],
-                          ['silenceCutRetakeRemoval', '言い直し削除']
-                        ].map(([field, label]) => (
-                          <div className="lovart-setting-row lovart-intensity-row" key={field}>
-                            <span className="lovart-intensity-label">{label}</span>
-                            <div className="lovart-video-tabs lovart-intensity-tabs">
-                              {SILENCE_CUT_INTENSITY_OPTIONS.map(([value, optionLabel]) => (
-                                <button
-                                  type="button"
-                                  key={value}
-                                  className={frameForm[field] === value ? 'is-selected' : ''}
-                                  onClick={() => updateFrameForm(field, value)}
-                                >
-                                  {optionLabel}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </>
-                    ) : null}
                     <div className="lovart-menu-header">カットの強さ</div>
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">無音検出秒数</div>
-                      <span>{formatSecondsValue(frameForm.silenceCutDetectSeconds)}</span>
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">無音と判定する長さ</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="この長さ以上続く無音をカット対象にします。短くするほどテンポよく詰まります。">i</span>
+                      </div>
+                      <span>{formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上</span>
                     </div>
                     <input
                       type="range"
@@ -6470,8 +6496,11 @@ export default function App() {
                       onChange={(event) => updateFrameForm('silenceCutDetectSeconds', Number(event.target.value))}
                     />
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">残す秒数</div>
-                      <span>{formatSecondsValue(frameForm.silenceCutKeepSeconds)}</span>
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">残す間</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="カットした箇所に残す間の長さです。長いほどゆったりした仕上がりになります。">i</span>
+                      </div>
+                      <span>{formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}</span>
                     </div>
                     <input
                       type="range"
@@ -6483,6 +6512,35 @@ export default function App() {
                       style={sliderTrackStyle(frameForm.silenceCutKeepSeconds, 0, 1)}
                       onChange={(event) => updateFrameForm('silenceCutKeepSeconds', Number(event.target.value))}
                     />
+                    <div className="lovart-menu-header lovart-section-gap">AIクリーンアップ</div>
+                    {[
+                      ['silenceCutFillerRemoval', 'フィラー削除', '「えー」「あの」などのつなぎ言葉をAIが検出して削除します。'],
+                      ['silenceCutCoughRemoval', '咳などの不要音', '咳払いやリップノイズなどの不要音をAIが検出して削除します。'],
+                      ['silenceCutRetakeRemoval', '言い直し削除', '言い直した箇所の、最初の言い間違い部分をAIが検出して削除します。']
+                    ].map(([field, label, tooltip]) => {
+                      const aiDisabled = frameForm.silenceCutModel !== 'elevenlabs-scribe-v2'
+                      return (
+                        <div className={`lovart-setting-row lovart-intensity-row${aiDisabled ? ' is-disabled' : ''}`} key={field}>
+                          <div className="lovart-setting-label">
+                            <span className="lovart-intensity-label">{label}</span>
+                            <span className="lovart-info-icon" data-lovart-tooltip={tooltip}>i</span>
+                          </div>
+                          <div className="lovart-video-tabs lovart-intensity-tabs">
+                            {SILENCE_CUT_INTENSITY_OPTIONS.map(([value, optionLabel]) => (
+                              <button
+                                type="button"
+                                key={value}
+                                disabled={aiDisabled}
+                                className={silenceCutAiLevelLabel(frameForm[field]) === optionLabel ? 'is-selected' : ''}
+                                onClick={() => updateFrameForm(field, value)}
+                              >
+                                {optionLabel}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
                     <button
                       type="button"
                       className="lovart-advanced-toggle"
@@ -6493,8 +6551,11 @@ export default function App() {
                     {silenceCutAdvancedOpen ? (
                       <>
                         <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">音量判定</div>
-                          <span>{frameForm.silenceCutThresholdDb}dB</span>
+                          <div className="lovart-setting-label">
+                            <div className="lovart-menu-header">無音判定の音量</div>
+                            <span className="lovart-info-icon" data-lovart-tooltip="マイクや部屋に合わせる校正値です。喋りの途中で切れるときは下げ、無音が残るときは上げてください。">i</span>
+                          </div>
+                          <span>{Math.round(frameForm.silenceCutThresholdDb)}dB</span>
                         </div>
                         <input
                           type="range"
@@ -6507,7 +6568,7 @@ export default function App() {
                           onChange={(event) => updateFrameForm('silenceCutThresholdDb', Number(event.target.value))}
                         />
                         <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">前マージン</div>
+                          <div className="lovart-menu-header">カット前の余白</div>
                           <span>{formatSecondsValue(frameForm.silenceCutPreMarginSeconds)}</span>
                         </div>
                         <input
@@ -6521,7 +6582,7 @@ export default function App() {
                           onChange={(event) => updateFrameForm('silenceCutPreMarginSeconds', Number(event.target.value))}
                         />
                         <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">後マージン</div>
+                          <div className="lovart-menu-header">カット後の余白</div>
                           <span>{formatSecondsValue(frameForm.silenceCutPostMarginSeconds)}</span>
                         </div>
                         <input
@@ -6535,7 +6596,7 @@ export default function App() {
                           onChange={(event) => updateFrameForm('silenceCutPostMarginSeconds', Number(event.target.value))}
                         />
                         <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">フェード</div>
+                          <div className="lovart-menu-header">音声のつなぎ</div>
                           <span>{formatSecondsValue(frameForm.silenceCutAudioFadeSeconds)}</span>
                         </div>
                         <input

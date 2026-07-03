@@ -1591,3 +1591,41 @@ body {
   border-color: #c4b5fd;
   color: #7c3aed;
 }
+
+/* Desktop-app parity: setting rows with info tooltips, section spacing,
+   disabled AI-cleanup rows */
+.lovart-setting-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.lovart-info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  border: 1px solid #d0d0d0;
+  color: #9aa0a6;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  flex: 0 0 auto;
+}
+
+.lovart-section-gap {
+  margin-top: 10px;
+}
+
+.lovart-intensity-row.is-disabled {
+  opacity: 0.48;
+}
+
+.lovart-intensity-row.is-disabled button {
+  cursor: default;
+}
