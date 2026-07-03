@@ -11,6 +11,8 @@ import { buildZipStore } from './lib/zipStore.mjs'
 import { generateSubtitleSrt } from './lib/subtitleGeneration.mjs'
 import { silenceCutVideo } from './lib/tempoCut.mjs'
 import { getLovartAuthStatus, saveLovartCredentials } from './lib/lovartMediaGeneration.mjs'
+import { getRunwayAuthStatus, saveRunwayCredentials } from './lib/runwayMediaGeneration.mjs'
+import { getHiggsfieldAuthStatus } from './lib/higgsfieldMediaGeneration.mjs'
 import { tmpdir } from 'node:os'
 
 const projectDir = resolve(process.env.EXCALIDRAW_PROJECT_DIR ?? process.cwd())
@@ -1202,6 +1204,49 @@ function canvasStoragePlugin() {
             results
           })
           broadcastCanvasChanged([canvasFile, ...inserted.map((placement) => placement.assetFile)])
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      server.middlewares.use('/api/runway/auth-status', async (req, res) => {
+        try {
+          if (req.method !== 'GET') {
+            res.statusCode = 405
+            res.setHeader('allow', 'GET')
+            res.end()
+            return
+          }
+          sendJson(res, 200, await getRunwayAuthStatus())
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      server.middlewares.use('/api/runway/credentials', async (req, res) => {
+        try {
+          if (req.method !== 'POST') {
+            res.statusCode = 405
+            res.setHeader('allow', 'POST')
+            res.end()
+            return
+          }
+          const body = JSON.parse(await readRequestBody(req))
+          sendJson(res, 200, await saveRunwayCredentials(body))
+        } catch (error) {
+          sendJson(res, 400, { error: error.message })
+        }
+      })
+
+      server.middlewares.use('/api/higgsfield/auth-status', async (req, res) => {
+        try {
+          if (req.method !== 'GET') {
+            res.statusCode = 405
+            res.setHeader('allow', 'GET')
+            res.end()
+            return
+          }
+          sendJson(res, 200, await getHiggsfieldAuthStatus())
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

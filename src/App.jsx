@@ -185,17 +185,20 @@ const VIDEO_ASPECTS = {
   '21:9': { width: 378, height: 162 }
 }
 
-// Lovart-routed models reuse the settings gating of the same family's
-// BuzzAssist/local variant; Lovart-only families get generic gating via the
-// 'lovart-generic' sentinel.
+// External-route models (Lovart / Higgsfield) reuse the settings gating of
+// the same family's BuzzAssist/local variant; provider-only families get
+// generic gating via the 'lovart-generic' sentinel. Runway models keep their
+// own ids — they have explicit gating cases below.
+const EXTERNAL_GATING_PREFIX = /^(lovart|higgsfield)-/
+
 function resolveGatingImageModel(model) {
-  if (!String(model || '').startsWith('lovart-')) return model
+  if (!EXTERNAL_GATING_PREFIX.test(String(model || ''))) return model
   const family = imageFamilyForModel(model)
   return family?.routes?.buzzassist ?? family?.routes?.codex ?? family?.routes?.hermes ?? 'lovart-generic'
 }
 
 function resolveGatingVideoModel(model) {
-  if (!String(model || '').startsWith('lovart-')) return model
+  if (!EXTERNAL_GATING_PREFIX.test(String(model || ''))) return model
   const family = videoFamilyForModel(model)
   return family?.routes?.buzzassist ?? family?.routes?.hermes ?? 'lovart-generic'
 }
@@ -305,6 +308,7 @@ function getVideoDurationRange(model) {
   if (isSeedanceModel(model)) return { min: 4, max: 15, step: 1 }
   if (isGrokVideoModel(model)) return { min: 1, max: 15, step: 1 }
   if (model === 'kling-v2-6') return { min: 5, max: 10, step: 5 }
+  if (model === 'runway-gen4-5') return { min: 5, max: 10, step: 5 }
   if (model === 'lovart-generic') return { min: 1, max: 15, step: 1 }
   return { min: 3, max: 15, step: 1 }
 }
@@ -512,7 +516,10 @@ const PROVIDER_FAVICON_DOMAINS = {
   grok: 'x.ai',
   codex: 'openai.com',
   lovart: 'lovart.ai',
-  buzzassist: 'buzzassist.ai'
+  buzzassist: 'buzzassist.ai',
+  runway: 'runwayml.com',
+  higgsfield: 'higgsfield.ai',
+  recraft: 'recraft.ai'
 }
 
 function ModelProviderIcon({ provider, size = 16 }) {
@@ -2460,6 +2467,10 @@ export default function App() {
   const [lovartAuth, setLovartAuth] = useState(null)
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
   const [bulkDownloading, setBulkDownloading] = useState(false)
+  const [runwayAuth, setRunwayAuth] = useState(null)
+  const [runwayKeySaving, setRunwayKeySaving] = useState(false)
+  const [higgsfieldStatus, setHiggsfieldStatus] = useState(null)
+  const runwaySecretInputRef = useRef(null)
   const lovartAccessKeyInputRef = useRef(null)
   const lovartSecretKeyInputRef = useRef(null)
   const subtitlePreviewOverlaysRef = useRef([])
@@ -4788,7 +4799,7 @@ export default function App() {
     try {
       if (activeFrameKind === 'image') {
         const model = frameForm.imageModel
-        if (String(model).startsWith('lovart-')) return null
+        if (/^(lovart|runway|higgsfield)-/.test(String(model))) return null
         if (model === 'gpt-image-2-codex') return 0
         return estimateCreditsForJob({
           kind: 'image',
@@ -4802,7 +4813,7 @@ export default function App() {
       }
       if (activeFrameKind === 'video') {
         const model = frameForm.videoModel
-        if (String(model).startsWith('lovart-')) return null
+        if (/^(lovart|runway|higgsfield)-/.test(String(model))) return null
         if (model === 'grok-imagine-video-hermes') return 0
         return estimateCreditsForJob({
           kind: 'video',
@@ -5611,6 +5622,14 @@ export default function App() {
                       .then((response) => response.json())
                       .then(setLovartAuth)
                       .catch(() => {})
+                    fetch('/api/runway/auth-status')
+                      .then((response) => response.json())
+                      .then(setRunwayAuth)
+                      .catch(() => {})
+                    fetch('/api/higgsfield/auth-status')
+                      .then((response) => response.json())
+                      .then(setHiggsfieldStatus)
+                      .catch(() => {})
                   }}
                 >
                   <span className="lovart-model-icon">
@@ -5637,6 +5656,50 @@ export default function App() {
                         {activeMediaRouteId === route.id ? <span className="menu-check">✓</span> : null}
                       </button>
                     ))}
+                    {activeMediaFamily?.routes?.runway && runwayAuth && !runwayAuth.configured ? (
+                      <div className="lovart-key-form">
+                        <div className="lovart-key-status">Runway APIキー未設定（dev.runwayml.com で発行）</div>
+                        <input ref={runwaySecretInputRef} type="password" placeholder="API Secret" autoComplete="off" />
+                        <button
+                          type="button"
+                          className="lovart-key-save"
+                          disabled={runwayKeySaving}
+                          onClick={async () => {
+                            const apiSecret = runwaySecretInputRef.current?.value?.trim()
+                            if (!apiSecret) {
+                              setGenerationError('Runway の API Secret を入力してください。')
+                              return
+                            }
+                            setRunwayKeySaving(true)
+                            try {
+                              const response = await fetch('/api/runway/credentials', {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ apiSecret })
+                              })
+                              const payload = await response.json()
+                              if (!response.ok) throw new Error(payload.error || '保存に失敗しました')
+                              setRunwayAuth(payload)
+                              setGenerationError('')
+                              if (runwaySecretInputRef.current) runwaySecretInputRef.current.value = ''
+                            } catch (error) {
+                              setGenerationError(error.message)
+                            } finally {
+                              setRunwayKeySaving(false)
+                            }
+                          }}
+                        >
+                          {runwayKeySaving ? '保存中…' : '保存'}
+                        </button>
+                      </div>
+                    ) : null}
+                    {activeMediaFamily?.routes?.higgsfield && higgsfieldStatus && !higgsfieldStatus.installed ? (
+                      <div className="lovart-key-form">
+                        <div className="lovart-key-status">
+                          Higgsfield CLI 未検出 — `brew install higgsfield-ai/tap/higgsfield` の後、`higgsfield auth login` でログインしてください
+                        </div>
+                      </div>
+                    ) : null}
                     {activeMediaFamily?.routes?.lovart && !lovartAuth?.configured ? (
                       <div className="lovart-key-form">
                         <div className="lovart-key-status">Lovart APIキー未設定（OpenClaw の ak_/sk_ を入力）</div>
