@@ -1414,3 +1414,23 @@ body {
   font-size: 11px;
   padding: 4px 9px;
 }
+
+/* Unified model catalog: scrollable family list + route selector */
+.lovart-model-menu {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.lovart-route-note {
+  margin-left: auto;
+  font-size: 10px;
+  color: #9ca3af;
+  padding-left: 10px;
+}
+
+.lovart-menu[data-lovart-menu='route'] .lovart-key-form {
+  border-top: 1px solid #eceef1;
+  margin-top: 6px;
+  padding-top: 8px;
+}

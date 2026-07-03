@@ -6,6 +6,16 @@ import {
 import '@excalidraw/excalidraw/index.css'
 import { generateKeyBetween } from 'fractional-indexing'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  IMAGE_MODEL_FAMILIES,
+  MEDIA_ROUTES,
+  VIDEO_MODEL_FAMILIES,
+  concreteModelFor,
+  defaultRouteIdFor,
+  imageFamilyForModel,
+  routeIdForModel,
+  videoFamilyForModel
+} from '../lib/modelCatalog.mjs'
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
@@ -171,7 +181,23 @@ const VIDEO_ASPECTS = {
   '21:9': { width: 378, height: 162 }
 }
 
+// Lovart-routed models reuse the settings gating of the same family's
+// BuzzAssist/local variant; Lovart-only families get generic gating via the
+// 'lovart-generic' sentinel.
+function resolveGatingImageModel(model) {
+  if (!String(model || '').startsWith('lovart-')) return model
+  const family = imageFamilyForModel(model)
+  return family?.routes?.buzzassist ?? family?.routes?.codex ?? family?.routes?.hermes ?? 'lovart-generic'
+}
+
+function resolveGatingVideoModel(model) {
+  if (!String(model || '').startsWith('lovart-')) return model
+  const family = videoFamilyForModel(model)
+  return family?.routes?.buzzassist ?? family?.routes?.hermes ?? 'lovart-generic'
+}
+
 function isGrokVideoModel(model) {
+  model = resolveGatingVideoModel(model)
   return model === 'grok-imagine-video-hermes' || model === 'grok-imagine-video-api'
 }
 
@@ -214,14 +240,17 @@ const GROK_IMAGE_QUALITY_OPTIONS = [
 ]
 
 function isSeedanceModel(model) {
+  model = resolveGatingVideoModel(model)
   return model === 'seedance-2' || model === 'seedance-2-fast'
 }
 
 function isGrokImageModel(model) {
+  model = resolveGatingImageModel(model)
   return model === 'grok-imagine-image-hermes' || model === 'grok-imagine-image-api'
 }
 
 function isGptStyleImageModel(model) {
+  model = resolveGatingImageModel(model)
   return model === 'gpt-image-2' || model === 'gpt-image-2-codex'
 }
 
@@ -234,7 +263,7 @@ function getImageQualityOptions(model) {
 }
 
 function getAvailableImageSizes(model) {
-  return IMAGE_MODEL_SIZES[model] ?? ['1K']
+  return IMAGE_MODEL_SIZES[resolveGatingImageModel(model)] ?? ['1K']
 }
 
 function getAvailableImageAspectRatios(model) {
@@ -256,7 +285,7 @@ function getVideoAspectRatioOptions(model) {
 }
 
 function getAvailableVideoModes(model, tab) {
-  switch (model) {
+  switch (resolveGatingVideoModel(model)) {
     case 'kling-v3':
     case 'kling-o3':
       return ['standard', 'pro']
@@ -268,13 +297,16 @@ function getAvailableVideoModes(model, tab) {
 }
 
 function getVideoDurationRange(model) {
+  model = resolveGatingVideoModel(model)
   if (isSeedanceModel(model)) return { min: 4, max: 15, step: 1 }
   if (isGrokVideoModel(model)) return { min: 1, max: 15, step: 1 }
   if (model === 'kling-v2-6') return { min: 5, max: 10, step: 5 }
+  if (model === 'lovart-generic') return { min: 1, max: 15, step: 1 }
   return { min: 3, max: 15, step: 1 }
 }
 
 function getAvailableVideoTabs(model) {
+  model = resolveGatingVideoModel(model)
   if (model === 'kling-v2-6') return ['keyframe', 'motion']
   if (model === 'kling-v3') return ['keyframe']
   return ['keyframe', 'reference']
@@ -286,6 +318,7 @@ function normalizeVideoTabForModel(model, value) {
 }
 
 function normalizeVideoDurationForModel(model, value) {
+  model = resolveGatingVideoModel(model)
   if (model === 'kling-v2-6') {
     return KLING_2_6_VIDEO_DURATIONS.includes(String(value)) ? String(value) : '5'
   }
@@ -464,7 +497,8 @@ const PROVIDER_FAVICON_DOMAINS = {
   vidu: 'vidu.com',
   grok: 'x.ai',
   codex: 'openai.com',
-  lovart: 'lovart.ai'
+  lovart: 'lovart.ai',
+  buzzassist: 'buzzassist.ai'
 }
 
 function ModelProviderIcon({ provider, size = 16 }) {
@@ -4330,32 +4364,9 @@ export default function App() {
 
     try {
       await saveCanvas(latestSceneRef.current)
-      const lovartIsVideo = kind === 'lovart' && savedForm.lovartKind === 'video'
-      const endpoint = kind === 'video' || lovartIsVideo ? GENERATE_VIDEO_ENDPOINT : GENERATE_IMAGE_ENDPOINT
+      const endpoint = kind === 'video' ? GENERATE_VIDEO_ENDPOINT : GENERATE_IMAGE_ENDPOINT
       const body =
-        kind === 'lovart'
-          ? {
-              prompt,
-              model: lovartIsVideo ? savedForm.lovartVideoModel : savedForm.lovartModel,
-              aspectRatio: lovartIsVideo ? savedForm.lovartVideoAspectRatio : savedForm.lovartAspectRatio,
-              referenceImagePaths: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind !== 'video')
-                .map((asset) => asset.path)
-                .filter(Boolean),
-              referenceImages: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind !== 'video' && !asset.path)
-                .map((asset) => asset.dataURL || asset.url)
-                .filter(Boolean),
-              selectCreated: true,
-              anchorElementId,
-              placement: 'replace',
-              replaceAnchor: true,
-              matchAnchor: true,
-              displayWidth: anchorElement.width,
-              displayHeight: anchorElement.height,
-              customData: frameCustomDataFromForm(kind, savedForm)
-            }
-          : kind === 'video'
+        kind === 'video'
           ? {
               prompt,
               model: savedForm.videoModel,
@@ -4699,22 +4710,39 @@ export default function App() {
     ? isViewportPlacementNearViewport(activePanelTarget, panelAppState, 24)
     : false
   const showPromptPanel = Boolean(activePanelTarget && activePanelTargetIsVisible && !isCurrentFrameGenerating)
-  const allImageModels = capabilities?.imageModels ?? [
-    { id: 'gpt-image-2-codex', label: 'GPT Image 2 (Codex)', provider: 'codex' },
-    { id: 'grok-imagine-image-hermes', label: 'Grok Imagine (Hermes)', provider: 'grok' }
-  ]
-  const allVideoModels = capabilities?.videoModels ?? [{ id: 'grok-imagine-video-hermes', label: 'Grok Imagine (Hermes)', provider: 'grok' }]
-  // The standard generators carry Codex/Hermes/BuzzAssist models; Lovart
-  // models live in the dedicated Lovart generator.
-  const imageModels = allImageModels.filter((model) => !model.requiresLovart)
-  const videoModels = allVideoModels.filter((model) => !model.requiresLovart)
-  const lovartImageModels = allImageModels.filter((model) => model.requiresLovart)
-  const lovartVideoModels = allVideoModels.filter((model) => model.requiresLovart)
-  const imageModelLabel = imageModels.find((model) => model.id === frameForm.imageModel)?.label ?? frameForm.imageModel
-  const videoModelLabel = videoModels.find((model) => model.id === frameForm.videoModel)?.label ?? frameForm.videoModel
-  const lovartActiveModels = frameForm.lovartKind === 'video' ? lovartVideoModels : lovartImageModels
-  const lovartActiveModelId = frameForm.lovartKind === 'video' ? frameForm.lovartVideoModel : frameForm.lovartModel
-  const lovartModelEntry = lovartActiveModels.find((model) => model.id === lovartActiveModelId) ?? lovartActiveModels[0] ?? null
+  // One canonical entry per model; the execution route (Codex / Hermes /
+  // BuzzAssist / Lovart) is chosen per model in the settings row and mapped
+  // to the concrete backend id stored in frameForm.
+  const activeImageFamily = imageFamilyForModel(frameForm.imageModel) ?? IMAGE_MODEL_FAMILIES[0]
+  const activeVideoFamily = videoFamilyForModel(frameForm.videoModel) ?? VIDEO_MODEL_FAMILIES[0]
+  const activeMediaFamily = activeFrameKind === 'video' ? activeVideoFamily : activeImageFamily
+  const activeMediaRouteId = activeFrameKind === 'video'
+    ? routeIdForModel(activeVideoFamily, frameForm.videoModel) ?? defaultRouteIdFor(activeVideoFamily)
+    : routeIdForModel(activeImageFamily, frameForm.imageModel) ?? defaultRouteIdFor(activeImageFamily)
+  const imageModelLabel = activeImageFamily?.label ?? frameForm.imageModel
+  const videoModelLabel = activeVideoFamily?.label ?? frameForm.videoModel
+
+  const applyMediaModelSelection = (kind, concreteId) => {
+    if (!concreteId) return
+    if (kind === 'video') {
+      // Youtube-AGI normalizes every dependent setting when the model changes.
+      const nextTab = normalizeVideoTabForModel(concreteId, frameForm.videoTab)
+      patchFrameForm({
+        videoModel: concreteId,
+        videoTab: nextTab,
+        videoMode: normalizeVideoModeForContext(concreteId, nextTab, frameForm.videoMode),
+        duration: normalizeVideoDurationForModel(concreteId, frameForm.duration),
+        videoAspectRatio: normalizeVideoAspectRatioForModel(concreteId, frameForm.videoAspectRatio)
+      })
+    } else {
+      patchFrameForm({
+        imageModel: concreteId,
+        aspectRatio: getAvailableImageAspectRatios(concreteId).includes(frameForm.aspectRatio) ? frameForm.aspectRatio : '1:1',
+        quality: getImageQualityOptions(concreteId).some(([value]) => value === frameForm.quality) ? frameForm.quality : 'auto',
+        imageSize: getAvailableImageSizes(concreteId).includes(frameForm.imageSize) ? frameForm.imageSize : getAvailableImageSizes(concreteId)[0]
+      })
+    }
+  }
   const lovartReferences = normalizeAssetList(frameForm.lovartReferences)
   const imageReferences = normalizeAssetList(frameForm.imageReferences)
   const videoReferenceImages = normalizeAssetList(frameForm.videoReferenceImages)
@@ -4852,24 +4880,6 @@ export default function App() {
             }}
           >
             <SilenceCutGeneratorToolIcon />
-          </button>
-          <button
-            type="button"
-            className="lovart-ai-button"
-            aria-label="Lovartジェネレーター"
-            data-lovart-tooltip="Lovartジェネレーター"
-            data-lovart-generator-kind="lovart"
-            onPointerDown={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-            }}
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              createGeneratorFrame('lovart')
-            }}
-          >
-            <LovartGeneratorToolIcon />
           </button>
         </div>
       ) : null}
@@ -5160,7 +5170,7 @@ export default function App() {
                     ? { height: '48px', minHeight: '48px', overflowY: 'auto', paddingBottom: 0, resize: 'none' }
                     : undefined
               }
-              placeholder={activeFrameKind === 'lovart' ? 'Lovart に依頼…' : '今日は何をしますか？'}
+              placeholder="今日は何をしますか？"
               value={frameForm.prompt}
               onChange={(event) => updateFrameForm('prompt', event.target.value)}
               onFocus={() => setOpenMenu(null)}
@@ -5371,103 +5381,6 @@ export default function App() {
           {generationError ? <div className="lovart-error">{generationError}</div> : null}
           <div className="lovart-ai-bottom">
             <div className="lovart-ai-left">
-              {activeFrameKind === 'lovart' ? (
-                <>
-                  <div className="lovart-video-tabs">
-                    <button
-                      type="button"
-                      className={frameForm.lovartKind !== 'video' ? 'is-selected' : ''}
-                      onClick={() => {
-                        setOpenMenu(null)
-                        patchFrameForm({ lovartKind: 'image' })
-                      }}
-                    >
-                      画像
-                    </button>
-                    <button
-                      type="button"
-                      className={frameForm.lovartKind === 'video' ? 'is-selected' : ''}
-                      onClick={() => {
-                        setOpenMenu(null)
-                        patchFrameForm({ lovartKind: 'video' })
-                      }}
-                    >
-                      動画
-                    </button>
-                  </div>
-                  <div className="lovart-menu-wrap">
-                    <button
-                      type="button"
-                      className={`lovart-pill${openMenu === 'lovart-key' ? ' tooltip-hidden' : ''}`}
-                      data-lovart-tooltip="Lovart APIキー"
-                      onClick={() => {
-                        setOpenMenu((current) => (current === 'lovart-key' ? null : 'lovart-key'))
-                        fetch('/api/lovart/auth-status')
-                          .then((response) => response.json())
-                          .then(setLovartAuth)
-                          .catch(() => {})
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                        <circle cx="8" cy="12" r="4" />
-                        <path d="M12 12h9M17 12v3M21 12v2" />
-                      </svg>
-                      <span
-                        className="lovart-key-dot"
-                        style={{ background: lovartAuth?.configured ? '#22c55e' : '#d1d5db' }}
-                      />
-                    </button>
-                    {openMenu === 'lovart-key' ? (
-                      <div className="lovart-menu wide" data-lovart-menu="lovart-key">
-                        <div className="lovart-menu-header">Lovart APIキー</div>
-                        <div className="lovart-key-form">
-                          <div className="lovart-key-status">
-                            {lovartAuth?.configured
-                              ? `接続済み: ${lovartAuth.accessKeyPreview ?? ''}`
-                              : '未設定（Lovart の OpenClaw 設定で発行した ak_/sk_ を入力）'}
-                          </div>
-                          <input ref={lovartAccessKeyInputRef} type="password" placeholder="ak_..." autoComplete="off" />
-                          <input ref={lovartSecretKeyInputRef} type="password" placeholder="sk_..." autoComplete="off" />
-                          <button
-                            type="button"
-                            className="lovart-key-save"
-                            disabled={lovartKeySaving}
-                            onClick={async () => {
-                              const accessKey = lovartAccessKeyInputRef.current?.value?.trim()
-                              const secretKey = lovartSecretKeyInputRef.current?.value?.trim()
-                              if (!accessKey || !secretKey) {
-                                setGenerationError('Lovart の Access Key と Secret Key を両方入力してください。')
-                                return
-                              }
-                              setLovartKeySaving(true)
-                              try {
-                                const response = await fetch('/api/lovart/credentials', {
-                                  method: 'POST',
-                                  headers: { 'content-type': 'application/json' },
-                                  body: JSON.stringify({ accessKey, secretKey })
-                                })
-                                const payload = await response.json()
-                                if (!response.ok) throw new Error(payload.error || '保存に失敗しました')
-                                setLovartAuth(payload)
-                                setGenerationError('')
-                                if (lovartAccessKeyInputRef.current) lovartAccessKeyInputRef.current.value = ''
-                                if (lovartSecretKeyInputRef.current) lovartSecretKeyInputRef.current.value = ''
-                                setOpenMenu(null)
-                              } catch (error) {
-                                setGenerationError(error.message)
-                              } finally {
-                                setLovartKeySaving(false)
-                              }
-                            }}
-                          >
-                            {lovartKeySaving ? '保存中…' : '保存'}
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </>
-              ) : null}
               {activeFrameKind === 'video' ? (
                 <div className="lovart-video-tabs">
                   {getAvailableVideoTabs(frameForm.videoModel).map((tab) => (
@@ -5511,62 +5424,111 @@ export default function App() {
                   className={`lovart-pill${openMenu === 'model' ? ' tooltip-hidden' : ''}`}
                   onClick={() => setOpenMenu((current) => (current === 'model' ? null : 'model'))}
                 >
-                  {activeFrameKind === 'lovart' && lovartModelEntry ? (
-                    <span className="lovart-model-icon"><ModelProviderIcon provider={lovartModelEntry.provider} /></span>
+                  {activeMediaFamily ? (
+                    <span className="lovart-model-icon"><ModelProviderIcon provider={activeMediaFamily.provider} /></span>
                   ) : null}
-                  <span>
-                    {activeFrameKind === 'lovart'
-                      ? lovartModelEntry?.label ?? lovartActiveModelId
-                      : activeFrameKind === 'video'
-                        ? videoModelLabel
-                        : imageModelLabel}
-                  </span>
+                  <span>{activeFrameKind === 'video' ? videoModelLabel : imageModelLabel}</span>
                   <ChevronIcon />
                 </button>
                 {openMenu === 'model' ? (
-                  <div className="lovart-menu" data-lovart-menu="model">
+                  <div className="lovart-menu lovart-model-menu" data-lovart-menu="model">
                     <div className="lovart-menu-header">モデル</div>
-                    {(activeFrameKind === 'lovart' ? lovartActiveModels : activeFrameKind === 'video' ? videoModels : imageModels).map((model) => (
+                    {(activeFrameKind === 'video' ? VIDEO_MODEL_FAMILIES : IMAGE_MODEL_FAMILIES).map((family) => (
                       <button
                         type="button"
-                        key={model.id}
+                        key={family.id}
                         onClick={() => {
-                          if (activeFrameKind === 'video') {
-                            // Youtube-AGI normalizes every dependent setting
-                            // when the model changes.
-                            const nextTab = normalizeVideoTabForModel(model.id, frameForm.videoTab)
-                            patchFrameForm({
-                              videoModel: model.id,
-                              videoTab: nextTab,
-                              videoMode: normalizeVideoModeForContext(model.id, nextTab, frameForm.videoMode),
-                              duration: normalizeVideoDurationForModel(model.id, frameForm.duration),
-                              videoAspectRatio: normalizeVideoAspectRatioForModel(model.id, frameForm.videoAspectRatio)
-                            })
-                          } else if (activeFrameKind === 'image') {
-                            patchFrameForm({
-                              imageModel: model.id,
-                              aspectRatio: getAvailableImageAspectRatios(model.id).includes(frameForm.aspectRatio) ? frameForm.aspectRatio : '1:1',
-                              quality: getImageQualityOptions(model.id).some(([value]) => value === frameForm.quality) ? frameForm.quality : 'auto',
-                              imageSize: getAvailableImageSizes(model.id).includes(frameForm.imageSize) ? frameForm.imageSize : getAvailableImageSizes(model.id)[0]
-                            })
-                          } else {
-                            updateFrameForm(
-                              frameForm.lovartKind === 'video' ? 'lovartVideoModel' : 'lovartModel',
-                              model.id
-                            )
-                          }
+                          // Keep the current route when the target family
+                          // supports it; otherwise fall back to its default.
+                          applyMediaModelSelection(activeFrameKind, concreteModelFor(family, activeMediaRouteId))
                           setOpenMenu(null)
                         }}
                       >
-                        <span className="lovart-model-icon"><ModelProviderIcon provider={model.provider} /></span>
-                        <span>{model.label}</span>
-                        {(activeFrameKind === 'lovart'
-                          ? lovartActiveModelId
-                          : activeFrameKind === 'video' ? frameForm.videoModel : frameForm.imageModel) === model.id ? (
-                          <span className="menu-check">✓</span>
-                        ) : null}
+                        <span className="lovart-model-icon"><ModelProviderIcon provider={family.provider} /></span>
+                        <span>{family.label}</span>
+                        {activeMediaFamily?.id === family.id ? <span className="menu-check">✓</span> : null}
                       </button>
                     ))}
+                  </div>
+                ) : null}
+              </div>
+              <div className="lovart-menu-wrap">
+                <button
+                  type="button"
+                  className={`lovart-pill${openMenu === 'route' ? ' tooltip-hidden' : ''}`}
+                  data-lovart-tooltip="実行先"
+                  onClick={() => {
+                    setOpenMenu((current) => (current === 'route' ? null : 'route'))
+                    fetch('/api/lovart/auth-status')
+                      .then((response) => response.json())
+                      .then(setLovartAuth)
+                      .catch(() => {})
+                  }}
+                >
+                  <span className="lovart-model-icon">
+                    <ModelProviderIcon provider={MEDIA_ROUTES.find((route) => route.id === activeMediaRouteId)?.icon ?? 'codex'} />
+                  </span>
+                  <span>{MEDIA_ROUTES.find((route) => route.id === activeMediaRouteId)?.label ?? activeMediaRouteId}</span>
+                  <ChevronIcon />
+                </button>
+                {openMenu === 'route' ? (
+                  <div className="lovart-menu" data-lovart-menu="route">
+                    <div className="lovart-menu-header">実行先</div>
+                    {MEDIA_ROUTES.filter((route) => activeMediaFamily?.routes?.[route.id]).map((route) => (
+                      <button
+                        type="button"
+                        key={route.id}
+                        onClick={() => {
+                          applyMediaModelSelection(activeFrameKind, activeMediaFamily.routes[route.id])
+                          setOpenMenu(null)
+                        }}
+                      >
+                        <span className="lovart-model-icon"><ModelProviderIcon provider={route.icon} /></span>
+                        <span>{route.label}</span>
+                        <span className="lovart-route-note">{route.note}</span>
+                        {activeMediaRouteId === route.id ? <span className="menu-check">✓</span> : null}
+                      </button>
+                    ))}
+                    {activeMediaFamily?.routes?.lovart && !lovartAuth?.configured ? (
+                      <div className="lovart-key-form">
+                        <div className="lovart-key-status">Lovart APIキー未設定（OpenClaw の ak_/sk_ を入力）</div>
+                        <input ref={lovartAccessKeyInputRef} type="password" placeholder="ak_..." autoComplete="off" />
+                        <input ref={lovartSecretKeyInputRef} type="password" placeholder="sk_..." autoComplete="off" />
+                        <button
+                          type="button"
+                          className="lovart-key-save"
+                          disabled={lovartKeySaving}
+                          onClick={async () => {
+                            const accessKey = lovartAccessKeyInputRef.current?.value?.trim()
+                            const secretKey = lovartSecretKeyInputRef.current?.value?.trim()
+                            if (!accessKey || !secretKey) {
+                              setGenerationError('Lovart の Access Key と Secret Key を両方入力してください。')
+                              return
+                            }
+                            setLovartKeySaving(true)
+                            try {
+                              const response = await fetch('/api/lovart/credentials', {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ accessKey, secretKey })
+                              })
+                              const payload = await response.json()
+                              if (!response.ok) throw new Error(payload.error || '保存に失敗しました')
+                              setLovartAuth(payload)
+                              setGenerationError('')
+                              if (lovartAccessKeyInputRef.current) lovartAccessKeyInputRef.current.value = ''
+                              if (lovartSecretKeyInputRef.current) lovartSecretKeyInputRef.current.value = ''
+                            } catch (error) {
+                              setGenerationError(error.message)
+                            } finally {
+                              setLovartKeySaving(false)
+                            }
+                          }}
+                        >
+                          {lovartKeySaving ? '保存中…' : '保存'}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -5612,50 +5574,9 @@ export default function App() {
               ) : null}
             </div>
             <div className="lovart-ai-right">
-              {activeFrameKind === 'lovart' ? (
-                <div className="lovart-menu-wrap">
-                  <button
-                    type="button"
-                    className="lovart-pill"
-                    data-lovart-tooltip="サイズ"
-                    onClick={() => setOpenMenu((current) => (current === 'ratio' ? null : 'ratio'))}
-                  >
-                    <span>{frameForm.lovartKind === 'video' ? frameForm.lovartVideoAspectRatio : frameForm.lovartAspectRatio}</span>
-                    <ChevronIcon />
-                  </button>
-                  {openMenu === 'ratio' ? (
-                    <div className="lovart-menu wide" data-lovart-menu="ratio">
-                      <div className="lovart-menu-header">形式</div>
-                      {Object.keys(frameForm.lovartKind === 'video' ? VIDEO_ASPECTS : IMAGE_ASPECTS).map((ratio) => (
-                        <button
-                          type="button"
-                          key={ratio}
-                          onClick={() => {
-                            updateFrameForm(frameForm.lovartKind === 'video' ? 'lovartVideoAspectRatio' : 'lovartAspectRatio', ratio)
-                            setOpenMenu(null)
-                          }}
-                        >
-                          <span className="lovart-ratio-icon">
-                            <span
-                              className="lovart-ratio-shape"
-                              style={{
-                                width: ratio.startsWith('16') || ratio === '21:9' ? 16 : ratio.endsWith(':16') || ratio === '9:16' ? 8 : 12,
-                                height: ratio.endsWith(':16') || ratio === '9:16' ? 16 : ratio.startsWith('16') || ratio === '21:9' ? 8 : 12
-                              }}
-                            />
-                          </span>
-                          <span>{ratio}</span>
-                          {(frameForm.lovartKind === 'video' ? frameForm.lovartVideoAspectRatio : frameForm.lovartAspectRatio) === ratio ? (
-                            <span className="menu-check">✓</span>
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               {activeFrameKind === 'image' ? (
                 <>
+                  {usesImageQualitySelection(frameForm.imageModel) || getAvailableImageSizes(frameForm.imageModel).length > 1 ? (
                   <div className="lovart-menu-wrap">
                     <button
                       type="button"
@@ -5711,6 +5632,7 @@ export default function App() {
                       </div>
                     ) : null}
                   </div>
+                  ) : null}
                   <div className="lovart-menu-wrap">
                     <button
                       type="button"
@@ -5761,7 +5683,11 @@ export default function App() {
                     data-lovart-trigger="video-settings"
                     onClick={() => setOpenMenu((current) => (current === 'video-settings' ? null : 'video-settings'))}
                   >
-                    <span>{`${frameForm.videoAspectRatio}・${frameForm.duration}s・${frameForm.resolution}`}</span>
+                    <span>
+                      {supportsResolutionSelection(frameForm.videoModel)
+                        ? `${frameForm.videoAspectRatio}・${frameForm.duration}s・${frameForm.resolution}`
+                        : `${frameForm.videoAspectRatio}・${frameForm.duration}s`}
+                    </span>
                     <ChevronIcon />
                   </button>
                   {openMenu === 'video-settings' ? (
@@ -5790,7 +5716,7 @@ export default function App() {
                         <div className="lovart-menu-header">Duration</div>
                         <span>{frameForm.duration}s</span>
                       </div>
-                      {frameForm.videoModel === 'kling-v2-6' ? (
+                      {resolveGatingVideoModel(frameForm.videoModel) === 'kling-v2-6' ? (
                         <div className="lovart-menu-grid compact">
                           {KLING_2_6_VIDEO_DURATIONS.map((duration) => (
                             <button
