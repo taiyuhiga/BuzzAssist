@@ -10,7 +10,7 @@ import { OFFICIAL_EXCALIDRAW_README, createExcalidrawView, insertExcalidrawImage
 import { buildZipStore } from './lib/zipStore.mjs'
 import { generateSubtitleSrt } from './lib/subtitleGeneration.mjs'
 import { silenceCutVideo } from './lib/tempoCut.mjs'
-import { getLovartAuthStatus, saveLovartCredentials } from './lib/lovartMediaGeneration.mjs'
+import { getLovartAuthStatus, getLovartModelCosts, saveLovartCredentials } from './lib/lovartMediaGeneration.mjs'
 import { tmpdir } from 'node:os'
 
 const projectDir = resolve(process.env.EXCALIDRAW_PROJECT_DIR ?? process.cwd())
@@ -1249,6 +1249,15 @@ function canvasStoragePlugin() {
           res.statusCode = 405
           res.setHeader('allow', 'GET, PUT')
           res.end()
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      // Learned per-model credit costs (from Lovart's confirmation quotes).
+      server.middlewares.use('/api/lovart/model-costs', async (req, res) => {
+        try {
+          sendJson(res, 200, await getLovartModelCosts())
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

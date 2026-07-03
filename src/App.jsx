@@ -2474,6 +2474,9 @@ export default function App() {
   const [managedSelectionActive, setManagedSelectionActive] = useState(false)
   const [lovartAuth, setLovartAuth] = useState(null)
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
+  // Lovart has no public rate card; costs learned from its confirmation
+  // quotes (per model) back the ⚡ estimate for the Lovart route.
+  const [lovartModelCosts, setLovartModelCosts] = useState({})
   const [bulkDownloading, setBulkDownloading] = useState(false)
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
@@ -2495,6 +2498,13 @@ export default function App() {
   const removeGlossaryTerm = (id) => persistGlossaryTerms((glossaryTerms ?? []).filter((term) => term.id !== id))
   const addGlossaryTerm = () => persistGlossaryTerms([...(glossaryTerms ?? []), { id: crypto.randomUUID(), from: '', to: '' }])
   const glossaryActiveCount = (glossaryTerms ?? []).filter((term) => term.from?.trim()).length
+  useEffect(() => {
+    if (activeFrameKind !== 'image' && activeFrameKind !== 'video') return
+    fetch('/api/lovart/model-costs')
+      .then((response) => response.json())
+      .then((costs) => setLovartModelCosts(costs && typeof costs === 'object' && !costs.error ? costs : {}))
+      .catch(() => {})
+  }, [activeFrameKind])
   const lovartAccessKeyInputRef = useRef(null)
   const lovartSecretKeyInputRef = useRef(null)
   const subtitlePreviewOverlaysRef = useRef([])
@@ -3498,7 +3508,18 @@ export default function App() {
       if (rafId) cancelAnimationFrame(rafId)
       rafId = requestAnimationFrame(trailHoverUpdate)
     }
-    const onPointerLeave = () => {
+    const onPointerLeave = (event) => {
+      // The playback controls (expand button etc.) are siblings of the
+      // Excalidraw root, so moving onto them fires pointerleave here. Keeping
+      // the hover alive prevents the unmount/remount loop that made the
+      // expand button flicker under the cursor.
+      const related = event?.relatedTarget
+      if (
+        related instanceof Element &&
+        related.closest('.lovart-video-playback-ui, .lovart-image-header, .lovart-video-modal')
+      ) {
+        return
+      }
       lastPointer = null
       if (rafId) cancelAnimationFrame(rafId)
       rafId = 0
@@ -4839,7 +4860,10 @@ export default function App() {
     try {
       if (activeFrameKind === 'image') {
         const model = frameForm.imageModel
-        if (String(model).startsWith('lovart-')) return null
+        if (String(model).startsWith('lovart-')) {
+          const generationModel = generationModelFor(imageFamilyForModel(model), model, frameForm.quality)
+          return lovartModelCosts[generationModel]?.credits ?? lovartModelCosts[model]?.credits ?? null
+        }
         if (model === 'gpt-image-2-codex') return 0
         return estimateCreditsForJob({
           kind: 'image',
@@ -4853,7 +4877,9 @@ export default function App() {
       }
       if (activeFrameKind === 'video') {
         const model = frameForm.videoModel
-        if (String(model).startsWith('lovart-')) return null
+        if (String(model).startsWith('lovart-')) {
+          return lovartModelCosts[model]?.credits ?? null
+        }
         if (model === 'grok-imagine-video-hermes') return 0
         return estimateCreditsForJob({
           kind: 'video',
