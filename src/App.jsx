@@ -448,26 +448,45 @@ function VideoGeneratorToolIcon() {
 }
 
 function SrtGeneratorToolIcon() {
+  // Tabler Icons "movie" (MIT) — 35mm film strip, same as the BuzzAssist desktop app.
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M6 12h6" />
-      <path d="M15 12h3" />
-      <path d="M6 15.5h3" />
-      <path d="M12 15.5h6" />
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 4v16" />
+      <path d="M16 4v16" />
+      <path d="M4 8h4" />
+      <path d="M4 16h4" />
+      <path d="M4 12h16" />
+      <path d="M16 8h4" />
+      <path d="M16 16h4" />
     </svg>
   )
 }
 
 function SilenceCutGeneratorToolIcon() {
+  // Tabler Icons "activity" (waveform) + "scissors" (MIT), same as the BuzzAssist desktop app.
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="6" cy="7" r="2.4" />
-      <circle cx="6" cy="17" r="2.4" />
-      <path d="M8.2 8.5L19.5 18.5" />
-      <path d="M8.2 15.5L19.5 5.5" />
-      <path d="M13.4 12l1.2 1.1" />
-    </svg>
+    <span
+      aria-hidden="true"
+      style={{
+        position: 'relative',
+        width: 22,
+        height: 22,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }}
+    >
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'absolute', left: 0, top: 1 }}>
+        <path d="M3 12h4l3 8l4 -16l3 8h4" />
+      </svg>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'absolute', right: -1, bottom: -1 }}>
+        <path d="M3 7a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+        <path d="M3 17a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+        <path d="M8.6 8.6l10.4 10.4" />
+        <path d="M8.6 15.4l10.4 -10.4" />
+      </svg>
+    </span>
   )
 }
 
@@ -732,30 +751,36 @@ function VideoCenterIcon({ size = 52 }) {
 }
 
 function SrtCenterIcon({ size = 52 }) {
+  // SRT file icon (document with folded corner + SRT label band), same as the
+  // BuzzAssist desktop app.
   const height = Math.max(6, Math.round(size * (60 / 84)))
   const strokeMain = Math.max(1.2, Math.round(size * 0.072 * 10) / 10)
+  const textSize = Math.max(8, Math.round(size * 0.2))
   return (
     <svg width={size} height={height} viewBox="0 0 84 60" fill="none" aria-hidden="true">
-      <rect x="8" y="6" width="68" height="48" rx="6" stroke="currentColor" strokeWidth={strokeMain} />
-      <path d="M18 34h22" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M46 34h20" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M18 43h12" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M36 43h30" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M19 4h32l14 14v38H19z" stroke="currentColor" strokeWidth={strokeMain} strokeLinejoin="round" />
+      <path d="M51 4v14h14" stroke="currentColor" strokeWidth={strokeMain} strokeLinejoin="round" />
+      <path d="M8 25h68v22H8z" fill="currentColor" opacity="0.18" />
+      <text x="42" y="40.5" textAnchor="middle" fontSize={textSize} fontWeight="700" fill="currentColor" fontFamily="Arial, Helvetica, sans-serif">SRT</text>
     </svg>
   )
 }
 
 function SilenceCutCenterIcon({ size = 52 }) {
+  // Audio waveform with an empty center gap — the silent stretch removed —
+  // same as the BuzzAssist desktop app.
   const height = Math.max(6, Math.round(size * (60 / 84)))
   const strokeMain = Math.max(1.2, Math.round(size * 0.072 * 10) / 10)
   return (
     <svg width={size} height={height} viewBox="0 0 84 60" fill="none" aria-hidden="true">
-      <path d="M10 24v12M18 18v24M26 26v8" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M58 26v8M66 18v24M74 24v12" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M36 14l12 32" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <path d="M48 14l-12 32" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
-      <circle cx="34" cy="11" r="3.4" stroke="currentColor" strokeWidth={strokeMain} />
-      <circle cx="50" cy="11" r="3.4" stroke="currentColor" strokeWidth={strokeMain} />
+      <path d="M8 26v8" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M16 20v20" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M24 10v40" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M32 22v16" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M52 22v16" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M60 10v40" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M68 20v20" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
+      <path d="M76 26v8" stroke="currentColor" strokeWidth={strokeMain} strokeLinecap="round" />
     </svg>
   )
 }
