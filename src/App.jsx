@@ -645,6 +645,16 @@ function ModelProviderGlyph({ provider, size = 16 }) {
   }
 }
 
+function DownloadIcon({ size = 13 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 4v11" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M5 20h14" />
+    </svg>
+  )
+}
+
 function LightningIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -1826,10 +1836,16 @@ function buildSelectedImageOverlays(scene) {
     .map((element) => {
       const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
       const pixelSize = getCanvasMediaPixelSize(element, scene.files)
+      const file = element.fileId ? scene.files?.[element.fileId] : null
+      const assetUrl =
+        assetUrlFromElement(element) ||
+        (typeof file?.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE) ? file.codexAssetUrl : '') ||
+        (typeof file?.dataURL === 'string' && file.dataURL.startsWith(CANVAS_ASSETS_ROUTE) ? file.dataURL : '')
       return {
         id: element.id,
         assetType: isCanvasVideoElement(element) ? 'video' : 'image',
         fileName: getCanvasMediaDisplayName(element, scene.files),
+        assetUrl,
         isSelected: selectedIds.has(element.id),
         left: placement.left,
         top: placement.top,
@@ -2442,6 +2458,7 @@ export default function App() {
   const [managedSelectionActive, setManagedSelectionActive] = useState(false)
   const [lovartAuth, setLovartAuth] = useState(null)
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
+  const [bulkDownloading, setBulkDownloading] = useState(false)
   const lovartAccessKeyInputRef = useRef(null)
   const lovartSecretKeyInputRef = useRef(null)
   const subtitlePreviewOverlaysRef = useRef([])
@@ -5145,10 +5162,67 @@ export default function App() {
               {img.pixelWidth > 0 && img.pixelHeight > 0 && img.width >= 90 ? (
                 <div className="lovart-image-header-size">{img.pixelWidth} × {img.pixelHeight}</div>
               ) : null}
+              {img.assetUrl && img.width >= 60 ? (
+                <a
+                  className="lovart-image-header-download"
+                  href={`${img.assetUrl}?download=1`}
+                  download
+                  title="ダウンロード"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <DownloadIcon size={12} />
+                </a>
+              ) : null}
             </div>
           </div>
         )
       })}
+      {(() => {
+        const downloadable = selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl)
+        if (downloadable.length < 2) return null
+        return (
+          <button
+            type="button"
+            className="lovart-download-chip"
+            disabled={bulkDownloading}
+            onClick={async () => {
+              const files = downloadable
+                .map((overlay) => overlay.assetUrl.split('/').pop().split('?')[0])
+                .filter(Boolean)
+              if (files.length === 0) return
+              setBulkDownloading(true)
+              try {
+                const response = await fetch('/api/assets/archive', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ files })
+                })
+                if (!response.ok) {
+                  const payload = await response.json().catch(() => ({}))
+                  throw new Error(payload.error || `Download failed: ${response.status}`)
+                }
+                const blob = await response.blob()
+                const url = URL.createObjectURL(blob)
+                const anchor = document.createElement('a')
+                anchor.href = url
+                anchor.download = `excalidraw-assets-${new Date().toISOString().slice(0, 10)}.zip`
+                document.body.appendChild(anchor)
+                anchor.click()
+                anchor.remove()
+                window.setTimeout(() => URL.revokeObjectURL(url), 10000)
+              } catch (error) {
+                setGenerationError(error.message)
+              } finally {
+                setBulkDownloading(false)
+              }
+            }}
+          >
+            <DownloadIcon />
+            <span>{bulkDownloading ? '準備中…' : `${downloadable.length}件をZIPでダウンロード`}</span>
+          </button>
+        )
+      })()}
       <div ref={hoverOverlayRef} className="lovart-hover-border" style={{ display: 'none' }} />
 
       {expandedVideoPlayback ? (

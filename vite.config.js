@@ -7,6 +7,7 @@ import { Readable } from 'node:stream'
 import { generateImageMedia, generateVideoMedia, getGenerationCapabilities, runWithConcurrency } from './lib/mediaGeneration.mjs'
 import { getBuzzAssistAuthStatus, loginBuzzAssistViaBrowser } from './lib/buzzassistApi.mjs'
 import { OFFICIAL_EXCALIDRAW_README, createExcalidrawView, insertExcalidrawImage, insertExcalidrawSubtitle, insertExcalidrawVideo, insertExcalidrawMediaBatch, performCanvasMaintenance, stripAssetBackedFileDataURLs } from './lib/canvasScene.mjs'
+import { buildZipStore } from './lib/zipStore.mjs'
 import { generateSubtitleSrt } from './lib/subtitleGeneration.mjs'
 import { silenceCutVideo } from './lib/tempoCut.mjs'
 import { getLovartAuthStatus, saveLovartCredentials } from './lib/lovartMediaGeneration.mjs'
@@ -195,6 +196,9 @@ async function serveCanvasAsset(req, res, next) {
     res.setHeader('content-type', mimeTypes.get(extname(filePath).toLowerCase()) ?? 'application/octet-stream')
     res.setHeader('content-length', String(fileStat.size))
     res.setHeader('cache-control', 'no-cache')
+    if (url.searchParams.get('download')) {
+      res.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(basename(filePath))}`)
+    }
     createReadStream(filePath).pipe(res)
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -634,6 +638,45 @@ function canvasStoragePlugin() {
         canvasWatchTimer = setTimeout(() => {
           broadcastCanvasChanged([canvasFile])
         }, 120)
+      })
+
+      // Bulk download: zips the requested canvas assets (STORE, no
+      // re-compression). Names are validated through the same path guard as
+      // single-asset serving.
+      server.middlewares.use('/api/assets/archive', async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'Method not allowed' })
+          return
+        }
+        try {
+          const body = JSON.parse((await readRequestBody(req)) || '{}')
+          const names = Array.isArray(body.files) ? body.files.slice(0, 500) : []
+          const entries = []
+          for (const rawName of names) {
+            const filePath = localAssetFilePathFromUrl(`${canvasAssetsRoute}${String(rawName)}`)
+            if (!filePath) continue
+            try {
+              const info = await stat(filePath)
+              if (!info.isFile()) continue
+              entries.push({ name: basename(filePath), data: await readFile(filePath), mtime: info.mtime })
+            } catch {
+              // skip missing files; the rest still download
+            }
+          }
+          if (entries.length === 0) {
+            sendJson(res, 400, { error: 'ダウンロード可能なアセットがありません。' })
+            return
+          }
+          const zip = buildZipStore(entries)
+          const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/zip')
+          res.setHeader('content-disposition', `attachment; filename="excalidraw-assets-${stamp}.zip"`)
+          res.setHeader('content-length', String(zip.length))
+          res.end(zip)
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
       })
 
       server.middlewares.use('/api/canvas-events', (req, res) => {

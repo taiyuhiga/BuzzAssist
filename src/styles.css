@@ -1454,3 +1454,51 @@ body {
   border-color: #c4b5fd;
   background: #fff;
 }
+
+/* Media downloads: header button + multi-select ZIP chip */
+.lovart-image-header-download {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 1px 3px;
+  border-radius: 4px;
+  color: #6b7280;
+  flex: 0 0 auto;
+}
+
+.lovart-image-header-download:hover {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.08);
+}
+
+.lovart-download-chip {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(17, 24, 39, 0.12);
+  cursor: pointer;
+}
+
+.lovart-download-chip:hover:not(:disabled) {
+  border-color: #c4b5fd;
+  color: #7c3aed;
+}
+
+.lovart-download-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
