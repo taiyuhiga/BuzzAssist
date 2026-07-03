@@ -123,6 +123,8 @@ When a Codex agent uses the Excalidraw MCP media tools, the MCP server instructi
 
 The canvas UI and MCP tools use the same generation backend. Supported model IDs are aligned with the Youtube-AGI (BuzzAssist) Excalidraw bridge.
 
+In the canvas UI, models appear once by canonical name (`lib/modelCatalog.mjs`) and the execution route — Codex / Hermes / BuzzAssist / Lovart — is picked per model from the 実行先 pill in the panel's settings row. The ⚡ generate button shows the pre-generation credit estimate for the selected route (0 for local routes, — for Lovart whose rates are external). The concrete backend model IDs below are what frames store and what MCP tools accept.
+
 Local models (no BuzzAssist account needed):
 
 ```text
@@ -176,9 +178,14 @@ Same model as the Youtube-AGI (BuzzAssist) folder canvas: a canvas belongs to on
   canvas/excalidraw-selection.json
   canvas/excalidraw-view-state.json
   canvas/assets/                    # generated images, videos, SRT files (BuzzAssist: .excalidraw/)
+  canvas/assets-trash/              # orphaned assets moved here by startup maintenance (recoverable)
 ```
 
 Bind the canvas to a project with `./scripts/start-canvas.sh /path/to/project` (or `EXCALIDRAW_PROJECT_DIR`). MCP tools take `projectDir` per call, so different projects keep separate canvases and assets.
+
+Downloads: every media header has a ⬇ button (`/excalidraw-assets/<name>?download=1`); selecting two or more media shows a ZIP chip backed by `POST /api/assets/archive` (STORE-method ZIP, `lib/zipStore.mjs`). Select-all + chip = bulk export.
+
+Maintenance: both servers run `performCanvasMaintenance` at startup (`lib/canvasScene.mjs`) — legacy inline base64 file records migrate to `canvas/assets/`, stale atomic-write `.tmp` files are removed, and assets referenced nowhere move to `canvas/assets-trash/`. `node scripts/cleanup-canvas.mjs [--dry-run]` removes empty generator frames (backs up the canvas first).
 
 ## Claude Code
 
