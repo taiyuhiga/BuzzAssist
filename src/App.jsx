@@ -5702,23 +5702,6 @@ export default function App() {
                   ))}
                 </div>
               ) : null}
-              {activeFrameKind === 'video' && getAvailableVideoModes(frameForm.videoModel, frameForm.videoTab).length > 0 ? (
-                <div className="lovart-video-tabs">
-                  {getAvailableVideoModes(frameForm.videoModel, frameForm.videoTab).map((mode) => (
-                    <button
-                      type="button"
-                      key={mode}
-                      className={normalizeVideoModeForContext(frameForm.videoModel, frameForm.videoTab, frameForm.videoMode) === mode ? 'is-selected' : ''}
-                      onClick={() => {
-                        setOpenMenu(null)
-                        patchFrameForm({ videoMode: mode })
-                      }}
-                    >
-                      {VIDEO_MODE_OPTIONS.find(([value]) => value === mode)?.[1] ?? mode}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
               <div className="lovart-menu-wrap">
                 <button
                   type="button"
@@ -6047,6 +6030,23 @@ export default function App() {
                   </button>
                   {openMenu === 'video-settings' ? (
                     <div className="lovart-menu wide lovart-video-settings" data-lovart-menu="video-settings">
+                      {getAvailableVideoModes(frameForm.videoModel, frameForm.videoTab).length > 0 ? (
+                        <>
+                          <div className="lovart-menu-header">Mode</div>
+                          <div className="lovart-choice-row">
+                            {getAvailableVideoModes(frameForm.videoModel, frameForm.videoTab).map((mode) => (
+                              <button
+                                type="button"
+                                key={mode}
+                                className={normalizeVideoModeForContext(frameForm.videoModel, frameForm.videoTab, frameForm.videoMode) === mode ? 'is-selected' : ''}
+                                onClick={() => patchFrameForm({ videoMode: mode })}
+                              >
+                                {VIDEO_MODE_OPTIONS.find(([value]) => value === mode)?.[1] ?? mode}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
                       <div className="lovart-menu-header">Size</div>
                       <div className="lovart-menu-grid">
                         {getVideoAspectRatioOptions(frameForm.videoModel).map((ratio) => (
