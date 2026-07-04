@@ -57,14 +57,12 @@ For the best quality, use the two-step flow instead of one call — step 2 is BO
 - `audioPath` は動画ファイル（mp4/mov/webm/mkv…）も可 — 音声トラックを自動抽出して転写
 - `glossary: [{from, to}]` — 固有名詞の表記補正（用語辞書）。文字起こし直後に適用され、カタカナ/ひらがなの表記ゆれにも自動でマッチ
 - `glossarySuggestions: [{from, to}]` — 校正で直した表記を渡すと**プロジェクトの用語辞書に自動追記**され、次回から認識段階で正しくなる（学習ループ）
-- `separateVocals: true` — Demucsで声だけ分離してから転写。BGM入り素材の認識・時刻精度が大幅に上がる（要 `pip3 install demucs`、CPUで実時間の約4倍）
-- `localRealign: true` — 生成後にWhisperXの音素アライメントで各cueの開始・終了を数十ms精度に補正（要 whisperx、初回はモデルDL）
 - `normalizeAudio` (default true) — 常にラウドネス正規化＋低域ノイズ除去（highpass 80Hz）をかけてから転写。認識精度と時刻精度が上がる
+- 品質検証: 行長超過・重複・極短キュー・読速超過（10.5字/秒超）を自動検出し、違反があれば文字数を詰めて一度だけ再分割した良い方を採用。さらに音声エネルギーと照合して「無音区間の字幕」「字幕のない発話区間」も警告（結果の `quality.issues` で確認可能）
 
 ## 一括生成
 
 複数の音声/動画をまとめて処理するときは `generate_excalidraw_subtitles_batch` を使う: `jobs: [{audioPath, scriptText?, fileName?}, …]` に共有設定（lineCount/maxCharsPerLine/…）を添えて1回で呼び、ジョブごとにSRTカードが置かれる。設定確認（AskUserQuestion）は共有設定に対して1回だけ。
-- 品質検証: 行長超過・重複・極短キュー・読速超過（10.5字/秒超）を自動検出し、違反があれば文字数を詰めて一度だけ再分割した良い方を採用。さらに音声エネルギーと照合して「無音区間の字幕」「字幕のない発話区間」も警告（結果の `quality.issues` で確認可能）
 
 ## Guardrails
 

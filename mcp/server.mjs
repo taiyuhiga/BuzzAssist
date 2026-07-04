@@ -1476,8 +1476,6 @@ function toolDefinitions() {
           fillerMode: { type: "string", enum: ["keep", "safe", "contextual"] },
           glossary: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false }, description: "Term corrections applied to the transcription before segmentation (用語辞書)." },
           normalizeAudio: { type: "boolean", description: "Loudness-normalize quiet audio before transcription. Defaults to true." },
-          separateVocals: { type: "boolean", description: "Run Demucs vocal separation first and transcribe the vocals stem — use for sources with BGM. Requires demucs (pip3 install demucs); slow (~4x realtime on CPU)." },
-          localRealign: { type: "boolean", description: "After building cues, snap boundaries to WhisperX phoneme-level word times (±tens of ms). Requires whisperx; first run downloads models." },
           glossarySuggestions: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false }, description: "Notation fixes you made while proofreading (e.g. バズアシ→BuzzAssist). Merged into the project 用語辞書 (canvas/subtitle-glossary.json) so future transcriptions learn them." },
           durationSeconds: { type: "number", description: "Audio duration in seconds. Probed with ffprobe when omitted." },
           fileName: { type: "string", description: "Destination SRT filename under canvas/assets/." },
@@ -1529,8 +1527,6 @@ function toolDefinitions() {
           punctuationMode: { type: "string", enum: ["auto", "none"] },
           fillerMode: { type: "string", enum: ["keep", "safe", "contextual"] },
           normalizeAudio: { type: "boolean", description: "Loudness-normalize before transcription. Defaults to true." },
-          separateVocals: { type: "boolean", description: "Demucs vocal separation per job (BGM sources). Requires demucs; slow." },
-          localRealign: { type: "boolean", description: "WhisperX boundary re-alignment per job. Requires whisperx." },
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           confirmedSettings: { type: "boolean", description: "Attestation that the shared settings were confirmed with the user. Required; calls without it are rejected." },
@@ -1741,8 +1737,6 @@ async function generateExcalidrawSubtitles(args = {}) {
     fillerMode: args.fillerMode,
     glossary: await mergedProjectGlossary(args),
     normalizeAudio: args.normalizeAudio,
-    separateVocals: args.separateVocals === true,
-    localRealign: args.localRealign === true,
     durationSeconds: args.durationSeconds,
     requestId: args.requestId,
   });
@@ -1796,8 +1790,6 @@ async function generateExcalidrawSubtitles(args = {}) {
     durationSeconds: generated.durationSeconds,
     credits: generated.credits,
     estimatedCostYen: generated.estimatedCostYen,
-    vocalsSeparated: Boolean(generated.vocalsSeparated),
-    locallyRealigned: Boolean(generated.locallyRealigned),
     glossaryTermsAdded,
     quality: generated.quality,
     srtPreview: generated.srtText.split("\n").slice(0, 12).join("\n"),
@@ -1930,11 +1922,7 @@ async function handleToolCall(id, params) {
   }
   if (params?.name === TOOL_GENERATE_SUBTITLES) {
     const result = await generateExcalidrawSubtitles(params.arguments ?? {});
-    const extras = [
-      result.vocalsSeparated ? "vocals separated" : "",
-      result.locallyRealigned ? "locally realigned" : "",
-      result.glossaryTermsAdded ? `+${result.glossaryTermsAdded} term(s) → 用語辞書` : "",
-    ].filter(Boolean).join(", ");
+    const extras = result.glossaryTermsAdded ? `+${result.glossaryTermsAdded} term(s) → 用語辞書` : "";
     sendResult(id, {
       content: [
         {

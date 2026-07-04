@@ -110,8 +110,6 @@ const DEFAULT_FRAME_FORM = {
   subtitleScriptName: '',
   subtitleGlossary: '',
   subtitleAudio: null,
-  subtitleSeparateVocals: false,
-  subtitleLocalRealign: false,
   silenceCutModel: 'ffmpeg-local',
   silenceCutInstruction: '',
   silenceCutFillerRemoval: 40,
@@ -1764,8 +1762,6 @@ function frameFormFromElement(element) {
     subtitleAudio: customData.subtitleAudioAsset && typeof customData.subtitleAudioAsset === 'object'
       ? customData.subtitleAudioAsset
       : null,
-    subtitleSeparateVocals: customData.subtitleSeparateVocals === true,
-    subtitleLocalRealign: customData.subtitleLocalRealign === true,
     silenceCutModel: customData.silenceCutModel === 'elevenlabs-scribe-v2' ? 'elevenlabs-scribe-v2' : 'ffmpeg-local',
     silenceCutInstruction: typeof customData.silenceCutInstruction === 'string' ? customData.silenceCutInstruction : '',
     silenceCutFillerRemoval: clamp(finiteNumberOr(customData.silenceCutFillerRemoval, DEFAULT_FRAME_FORM.silenceCutFillerRemoval), 0, 100),
@@ -1802,9 +1798,7 @@ function frameCustomDataFromForm(kind, form) {
       subtitleScriptText: form.subtitleScriptText,
       subtitleScriptName: form.subtitleScriptName,
       subtitleGlossary: form.subtitleGlossary,
-      subtitleAudioAsset: form.subtitleAudio || null,
-      subtitleSeparateVocals: form.subtitleSeparateVocals,
-      subtitleLocalRealign: form.subtitleLocalRealign
+      subtitleAudioAsset: form.subtitleAudio || null
     }
   }
   if (kind === 'silenceCut') {
@@ -4792,8 +4786,6 @@ export default function App() {
               holdSeconds: savedForm.subtitleHoldSeconds,
               punctuationMode: savedForm.subtitlePunctuationMode,
               fillerMode: savedForm.subtitleFillerMode,
-              separateVocals: savedForm.subtitleSeparateVocals === true,
-              localRealign: savedForm.subtitleLocalRealign === true,
               durationSeconds: Number(savedForm.subtitleAudio.duration) || undefined,
               anchorElementId,
               placement: 'replace',
@@ -6689,42 +6681,6 @@ export default function App() {
                           key={value}
                           className={frameForm.subtitleFillerMode === value ? 'is-selected' : ''}
                           onClick={() => updateFrameForm('subtitleFillerMode', value)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="lovart-setting-row">
-                      <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">BGM分離（Demucs）</div>
-                        <span className="lovart-info-icon" data-lovart-tooltip="BGM入りの音源から声だけを分離してから文字起こしします。認識・時刻の精度が大きく上がりますが処理は遅めです。要demucs（pip3 install demucs）。">i</span>
-                      </div>
-                    </div>
-                    <div className="lovart-choice-row punct">
-                      {[[false, '使わない'], [true, '使う']].map(([value, label]) => (
-                        <button
-                          type="button"
-                          key={label}
-                          className={frameForm.subtitleSeparateVocals === value ? 'is-selected' : ''}
-                          onClick={() => updateFrameForm('subtitleSeparateVocals', value)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="lovart-setting-row">
-                      <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">時刻の再調整（WhisperX）</div>
-                        <span className="lovart-info-icon" data-lovart-tooltip="生成後にWhisperXの音素アライメントで各字幕の開始・終了を数十ミリ秒精度に補正します。要whisperx（初回はモデルをダウンロード）。">i</span>
-                      </div>
-                    </div>
-                    <div className="lovart-choice-row punct">
-                      {[[false, '使わない'], [true, '使う']].map(([value, label]) => (
-                        <button
-                          type="button"
-                          key={label}
-                          className={frameForm.subtitleLocalRealign === value ? 'is-selected' : ''}
-                          onClick={() => updateFrameForm('subtitleLocalRealign', value)}
                         >
                           {label}
                         </button>
