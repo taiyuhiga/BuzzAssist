@@ -1309,6 +1309,10 @@ function canvasStoragePlugin() {
             return
           }
           const body = JSON.parse(await readRequestBody(req))
+          body.glossary = [
+            ...(await readProjectGlossary()).terms.filter((term) => term.from),
+            ...(Array.isArray(body.glossary) ? body.glossary : [])
+          ]
           const generated = await generateSubtitleSrt(body)
           const placement = await insertExcalidrawSubtitle({
             canvasDir,

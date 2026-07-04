@@ -37,6 +37,7 @@ const TOOL_BUZZASSIST_LOGIN = "buzzassist_login";
 const TOOL_BUZZASSIST_AUTH_STATUS = "buzzassist_auth_status";
 const TOOL_SETUP_HERMES = "setup_hermes_grok";
 const TOOL_GENERATE_SUBTITLES = "generate_excalidraw_subtitles";
+const TOOL_GENERATE_SUBTITLES_BATCH = "generate_excalidraw_subtitles_batch";
 const TOOL_SILENCE_CUT_VIDEO = "silence_cut_excalidraw_video";
 const IMAGE_MODEL_IDS = IMAGE_MODELS.map((model) => model.id);
 const VIDEO_MODEL_IDS = VIDEO_MODELS.map((model) => model.id);
@@ -74,6 +75,31 @@ async function mergedProjectGlossary(args = {}) {
   const projectTerms = (Array.isArray(stored?.terms) ? stored.terms : []).filter((term) => nonEmptyString(term?.from));
   const requestTerms = Array.isArray(args.glossary) ? args.glossary : [];
   return [...projectTerms, ...requestTerms];
+}
+
+// Glossary learning loop: notation fixes the agent made while proofreading
+// are merged into the project 用語辞書 so future transcriptions get them
+// right at the source.
+async function addGlossarySuggestions(args, suggestions) {
+  const list = (Array.isArray(suggestions) ? suggestions : [])
+    .map((term) => ({ from: String(term?.from ?? "").trim(), to: String(term?.to ?? "").trim() }))
+    .filter((term) => term.from && term.to && term.from !== term.to);
+  if (list.length === 0) return 0;
+  const filePath = join(resolveCanvasDir(args), "subtitle-glossary.json");
+  const stored = await readJsonIfExists(filePath, { terms: [] });
+  const terms = Array.isArray(stored?.terms) ? stored.terms : [];
+  const existing = new Set(terms.map((term) => String(term?.from ?? "").trim()).filter(Boolean));
+  let added = 0;
+  for (const term of list) {
+    if (existing.has(term.from)) continue;
+    existing.add(term.from);
+    terms.push({ id: globalThis.crypto.randomUUID(), from: term.from, to: term.to });
+    added += 1;
+  }
+  if (added > 0) {
+    await writeFile(filePath, `${JSON.stringify({ terms }, null, 2)}\n`);
+  }
+  return added;
 }
 
 // Auto-open: when a canvas tool runs and no browser tab is connected, start
@@ -232,6 +258,7 @@ const SETTINGS_CONFIRMATION_TOOLS = new Map([
   [TOOL_GENERATE_VIDEO, "video"],
   [TOOL_GENERATE_VIDEOS_BATCH, "video"],
   [TOOL_GENERATE_SUBTITLES, "subtitle"],
+  [TOOL_GENERATE_SUBTITLES_BATCH, "subtitle"],
   [TOOL_SILENCE_CUT_VIDEO, "silenceCut"],
 ]);
 
@@ -1423,7 +1450,7 @@ function toolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          audioPath: { type: "string", description: "Absolute local audio file path (mp3/wav/m4a/ogg/opus/webm/flac/aac). Required unless subtitleLines is given." },
+          audioPath: { type: "string", description: "Absolute local audio file path (mp3/wav/m4a/ogg/opus/webm/flac/aac) or a video file (mp4/mov/webm/mkv… — the audio track is extracted automatically). Required unless subtitleLines is given." },
           returnWordsOnly: { type: "boolean", description: "Return the transcript and timed words without building SRT or touching the canvas. Use as step 1 of the LLM segmentation flow." },
           subtitleLines: {
             type: "array",
@@ -1449,6 +1476,9 @@ function toolDefinitions() {
           fillerMode: { type: "string", enum: ["keep", "safe", "contextual"] },
           glossary: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false }, description: "Term corrections applied to the transcription before segmentation (用語辞書)." },
           normalizeAudio: { type: "boolean", description: "Loudness-normalize quiet audio before transcription. Defaults to true." },
+          separateVocals: { type: "boolean", description: "Run Demucs vocal separation first and transcribe the vocals stem — use for sources with BGM. Requires demucs (pip3 install demucs); slow (~4x realtime on CPU)." },
+          localRealign: { type: "boolean", description: "After building cues, snap boundaries to WhisperX phoneme-level word times (±tens of ms). Requires whisperx; first run downloads models." },
+          glossarySuggestions: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false }, description: "Notation fixes you made while proofreading (e.g. バズアシ→BuzzAssist). Merged into the project 用語辞書 (canvas/subtitle-glossary.json) so future transcriptions learn them." },
           durationSeconds: { type: "number", description: "Audio duration in seconds. Probed with ffprobe when omitted." },
           fileName: { type: "string", description: "Destination SRT filename under canvas/assets/." },
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
@@ -1459,6 +1489,53 @@ function toolDefinitions() {
           confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate the SRT without saving it to the canvas." },
         },
+        additionalProperties: false,
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    {
+      name: TOOL_GENERATE_SUBTITLES_BATCH,
+      title: "Generate Excalidraw Subtitles (Batch)",
+      description: "Generate Japanese SRT subtitles for MANY audio/video files in one call (podcast series, multi-part recordings) and place one SRT card per job on the canvas. Shared settings (mode/lineCount/maxCharsPerLine/…) apply to every job; each job needs its own audioPath (video files OK — audio is extracted). Requires buzzassist_login. REQUIRED: confirm the shared settings with the user FIRST via one AskUserQuestion. Calls without confirmedSettings=true are rejected. AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (or 'canvas-2'…'canvas-4').",
+      inputSchema: {
+        type: "object",
+        properties: {
+          jobs: {
+            type: "array",
+            minItems: 1,
+            description: "One entry per SRT to generate.",
+            items: {
+              type: "object",
+              properties: {
+                audioPath: { type: "string", description: "Absolute local audio or video file path." },
+                scriptText: { type: "string", description: "Narration script for this job (scripted mode)." },
+                scriptPath: { type: "string", description: "Absolute path to a UTF-8 script file for this job." },
+                fileName: { type: "string", description: "Destination SRT filename under canvas/assets/." },
+                anchorElementId: { type: "string", description: "Existing Excalidraw element id to place beside." },
+              },
+              required: ["audioPath"],
+              additionalProperties: false,
+            },
+          },
+          mode: { type: "string", enum: ["scripted", "scriptless"], description: "Shared mode. Defaults per job: scripted when that job has a script, else scriptless." },
+          lineCount: { type: "number", description: "Subtitle lines per cue: 1 or 2." },
+          maxCharsPerLine: { type: "number", description: "Max characters per line (Japanese-aware)." },
+          holdSeconds: { type: "number", description: "Extra seconds each cue stays on screen." },
+          punctuationMode: { type: "string", enum: ["auto", "none"] },
+          fillerMode: { type: "string", enum: ["keep", "safe", "contextual"] },
+          normalizeAudio: { type: "boolean", description: "Loudness-normalize before transcription. Defaults to true." },
+          separateVocals: { type: "boolean", description: "Demucs vocal separation per job (BGM sources). Requires demucs; slow." },
+          localRealign: { type: "boolean", description: "WhisperX boundary re-alignment per job. Requires whisperx." },
+          projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the shared settings were confirmed with the user. Required; calls without it are rejected." },
+        },
+        required: ["jobs"],
         additionalProperties: false,
       },
       annotations: {
@@ -1610,6 +1687,7 @@ function normalizeProvidedSubtitleLines(rawLines) {
 }
 
 async function generateExcalidrawSubtitles(args = {}) {
+  const glossaryTermsAdded = await addGlossarySuggestions(args, args.glossarySuggestions);
   if (Array.isArray(args.subtitleLines) && args.subtitleLines.length > 0) {
     const holdSeconds = normalizeSubtitleHoldSeconds(args.holdSeconds);
     const lines = normalizeProvidedSubtitleLines(args.subtitleLines).map((line, index, all) => {
@@ -1637,6 +1715,7 @@ async function generateExcalidrawSubtitles(args = {}) {
       mode: args.mode ?? "llm",
       model: args.model ?? "host-llm-segmented",
       cueCount: lines.length,
+      glossaryTermsAdded,
       srtPreview: srtText.split("\n").slice(0, 12).join("\n"),
       ...(placement
         ? { elementId: placement.elementId, groupId: placement.groupId, assetFile: placement.assetFile, assetUrl: placement.assetUrl, bounds: placement.bounds }
@@ -1662,6 +1741,8 @@ async function generateExcalidrawSubtitles(args = {}) {
     fillerMode: args.fillerMode,
     glossary: await mergedProjectGlossary(args),
     normalizeAudio: args.normalizeAudio,
+    separateVocals: args.separateVocals === true,
+    localRealign: args.localRealign === true,
     durationSeconds: args.durationSeconds,
     requestId: args.requestId,
   });
@@ -1715,6 +1796,10 @@ async function generateExcalidrawSubtitles(args = {}) {
     durationSeconds: generated.durationSeconds,
     credits: generated.credits,
     estimatedCostYen: generated.estimatedCostYen,
+    vocalsSeparated: Boolean(generated.vocalsSeparated),
+    locallyRealigned: Boolean(generated.locallyRealigned),
+    glossaryTermsAdded,
+    quality: generated.quality,
     srtPreview: generated.srtText.split("\n").slice(0, 12).join("\n"),
     ...(placement
       ? {
@@ -1817,6 +1902,7 @@ const CANVAS_AUTO_OPEN_TOOLS = new Set([
   TOOL_GENERATE_IMAGES_BATCH,
   TOOL_GENERATE_VIDEOS_BATCH,
   TOOL_GENERATE_SUBTITLES,
+  TOOL_GENERATE_SUBTITLES_BATCH,
   TOOL_SILENCE_CUT_VIDEO,
 ]);
 
@@ -1844,14 +1930,61 @@ async function handleToolCall(id, params) {
   }
   if (params?.name === TOOL_GENERATE_SUBTITLES) {
     const result = await generateExcalidrawSubtitles(params.arguments ?? {});
+    const extras = [
+      result.vocalsSeparated ? "vocals separated" : "",
+      result.locallyRealigned ? "locally realigned" : "",
+      result.glossaryTermsAdded ? `+${result.glossaryTermsAdded} term(s) → 用語辞書` : "",
+    ].filter(Boolean).join(", ");
     sendResult(id, {
       content: [
         {
           type: "text",
-          text: `Generated ${result.cueCount} subtitle cue(s) with ${result.model} (${result.mode})${result.dryRun ? " [dry run]" : ""}.${result.dryRun ? "" : canvasHintText()}`,
+          text: `Generated ${result.cueCount} subtitle cue(s) with ${result.model} (${result.mode})${extras ? ` [${extras}]` : ""}${result.dryRun ? " [dry run]" : ""}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
+    });
+    return;
+  }
+
+  if (params?.name === TOOL_GENERATE_SUBTITLES_BATCH) {
+    const args = params.arguments ?? {};
+    const jobs = Array.isArray(args.jobs) ? args.jobs : [];
+    if (jobs.length === 0) {
+      sendError(id, JsonRpcError.INVALID_PARAMS, "jobs must contain at least one entry.");
+      return;
+    }
+    const results = [];
+    let succeeded = 0;
+    for (const job of jobs) {
+      try {
+        const merged = { ...args, ...job };
+        delete merged.jobs;
+        delete merged.returnWordsOnly;
+        delete merged.subtitleLines;
+        const result = await generateExcalidrawSubtitles(merged);
+        succeeded += 1;
+        results.push({
+          ok: true,
+          audioPath: job.audioPath,
+          cueCount: result.cueCount,
+          credits: result.credits,
+          elementId: result.elementId,
+          assetUrl: result.assetUrl,
+        });
+      } catch (error) {
+        results.push({ ok: false, audioPath: job.audioPath, error: error?.message || String(error) });
+      }
+    }
+    const failed = jobs.length - succeeded;
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `Generated ${succeeded}/${jobs.length} SRT card(s)${failed ? `, ${failed} failed` : ""}.${succeeded ? canvasHintText() : ""}`,
+        },
+      ],
+      structuredContent: { ok: succeeded > 0, total: jobs.length, succeeded, failed, results },
     });
     return;
   }

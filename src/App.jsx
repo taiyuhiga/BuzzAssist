@@ -110,6 +110,8 @@ const DEFAULT_FRAME_FORM = {
   subtitleScriptName: '',
   subtitleGlossary: '',
   subtitleAudio: null,
+  subtitleSeparateVocals: false,
+  subtitleLocalRealign: false,
   silenceCutModel: 'ffmpeg-local',
   silenceCutInstruction: '',
   silenceCutFillerRemoval: 40,
@@ -425,6 +427,9 @@ function getUploadTargetKind(target) {
 }
 
 function getUploadTargetAccept(target) {
+  // Subtitle sources accept video too: ffmpeg extracts the audio track
+  // server-side before transcription (desktop-app behavior).
+  if (target === 'subtitleAudio') return 'audio/*,video/*'
   const kind = getUploadTargetKind(target)
   if (kind === 'video') return 'video/*'
   if (kind === 'audio') return 'audio/*'
@@ -1759,6 +1764,8 @@ function frameFormFromElement(element) {
     subtitleAudio: customData.subtitleAudioAsset && typeof customData.subtitleAudioAsset === 'object'
       ? customData.subtitleAudioAsset
       : null,
+    subtitleSeparateVocals: customData.subtitleSeparateVocals === true,
+    subtitleLocalRealign: customData.subtitleLocalRealign === true,
     silenceCutModel: customData.silenceCutModel === 'elevenlabs-scribe-v2' ? 'elevenlabs-scribe-v2' : 'ffmpeg-local',
     silenceCutInstruction: typeof customData.silenceCutInstruction === 'string' ? customData.silenceCutInstruction : '',
     silenceCutFillerRemoval: clamp(finiteNumberOr(customData.silenceCutFillerRemoval, DEFAULT_FRAME_FORM.silenceCutFillerRemoval), 0, 100),
@@ -1795,7 +1802,9 @@ function frameCustomDataFromForm(kind, form) {
       subtitleScriptText: form.subtitleScriptText,
       subtitleScriptName: form.subtitleScriptName,
       subtitleGlossary: form.subtitleGlossary,
-      subtitleAudioAsset: form.subtitleAudio || null
+      subtitleAudioAsset: form.subtitleAudio || null,
+      subtitleSeparateVocals: form.subtitleSeparateVocals,
+      subtitleLocalRealign: form.subtitleLocalRealign
     }
   }
   if (kind === 'silenceCut') {
@@ -4008,7 +4017,9 @@ export default function App() {
     const expectedKind = getUploadTargetKind(target)
     restoreGeneratorUploadFrame()
     try {
-      const assets = (await Promise.all(files.map(uploadAssetFile))).filter((asset) => asset.kind === expectedKind)
+      const assets = (await Promise.all(files.map(uploadAssetFile))).filter(
+        (asset) => asset.kind === expectedKind || (target === 'subtitleAudio' && asset.kind === 'video')
+      )
       for (const asset of assets) {
         addAssetToFrame(target, asset)
       }
@@ -4781,6 +4792,8 @@ export default function App() {
               holdSeconds: savedForm.subtitleHoldSeconds,
               punctuationMode: savedForm.subtitlePunctuationMode,
               fillerMode: savedForm.subtitleFillerMode,
+              separateVocals: savedForm.subtitleSeparateVocals === true,
+              localRealign: savedForm.subtitleLocalRealign === true,
               durationSeconds: Number(savedForm.subtitleAudio.duration) || undefined,
               anchorElementId,
               placement: 'replace',
@@ -5428,7 +5441,8 @@ export default function App() {
                     `対象: canvas/assets/${assetName}（要素ID: ${target.id}）`,
                     '手順:',
                     '1. SRTファイルを読み、時刻はそのままにテキストだけ校正する（同音異義語・変換ミス・脱字・表記ゆれを修正。発言内容は変えない。canvas/subtitle-glossary.json の用語辞書の表記を優先）',
-                    `2. excalidraw MCP の generate_excalidraw_subtitles を subtitleLines（各cueの text/start/end）+ anchorElementId "${target.id}" + replaceAnchor: true + confirmedSettings: true で呼んでカードを置き換える`
+                    `2. excalidraw MCP の generate_excalidraw_subtitles を subtitleLines（各cueの text/start/end）+ anchorElementId "${target.id}" + replaceAnchor: true + confirmedSettings: true で呼んでカードを置き換える`,
+                    '3. 固有名詞などの繰り返し直した表記があれば、同じ呼び出しに glossarySuggestions: [{from, to}] を付けて用語辞書に学習させる'
                   ].join('\n')
                   navigator.clipboard?.writeText(prompt).catch(() => {})
                   setProofreadCopied(true)
@@ -6344,7 +6358,7 @@ export default function App() {
                       type="button"
                       data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
                       className={`lovart-utility-asset-card${isSilencePanel ? ' video' : ' audio'}`}
-                      title={primaryAsset.name || (isSilencePanel ? '動画を添付' : '音声を添付')}
+                      title={primaryAsset.name || (isSilencePanel ? '動画を添付' : '音声・動画を添付')}
                       onClick={openPrimaryPicker}
                     >
                       {isSilencePanel ? (
@@ -6381,7 +6395,7 @@ export default function App() {
                     type="button"
                     data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
                     className="lovart-utility-tilt-card primary"
-                    title={isSilencePanel ? '動画を添付' : '音声を添付'}
+                    title={isSilencePanel ? '動画を添付' : '音声・動画を添付'}
                     onClick={openPrimaryPicker}
                   >
                     <span className="lovart-add-plus">+</span>
@@ -6675,6 +6689,42 @@ export default function App() {
                           key={value}
                           className={frameForm.subtitleFillerMode === value ? 'is-selected' : ''}
                           onClick={() => updateFrameForm('subtitleFillerMode', value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="lovart-setting-row">
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">BGM分離（Demucs）</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="BGM入りの音源から声だけを分離してから文字起こしします。認識・時刻の精度が大きく上がりますが処理は遅めです。要demucs（pip3 install demucs）。">i</span>
+                      </div>
+                    </div>
+                    <div className="lovart-choice-row punct">
+                      {[[false, '使わない'], [true, '使う']].map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={label}
+                          className={frameForm.subtitleSeparateVocals === value ? 'is-selected' : ''}
+                          onClick={() => updateFrameForm('subtitleSeparateVocals', value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="lovart-setting-row">
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">時刻の再調整（WhisperX）</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="生成後にWhisperXの音素アライメントで各字幕の開始・終了を数十ミリ秒精度に補正します。要whisperx（初回はモデルをダウンロード）。">i</span>
+                      </div>
+                    </div>
+                    <div className="lovart-choice-row punct">
+                      {[[false, '使わない'], [true, '使う']].map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={label}
+                          className={frameForm.subtitleLocalRealign === value ? 'is-selected' : ''}
+                          onClick={() => updateFrameForm('subtitleLocalRealign', value)}
                         >
                           {label}
                         </button>
