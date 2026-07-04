@@ -1989,9 +1989,14 @@ body {
 }
 
 /* Short pills (用語, settings label) must never collapse; only the model pill
-   ellipsizes when the bar runs out of room. */
+   ellipsizes when the bar runs out of room — and even then it keeps enough
+   width to stay readable and clickable. */
 .lovart-utility-panel .lovart-ai-left .lovart-glossary-wrap {
   flex-shrink: 0;
+}
+
+.lovart-utility-panel .lovart-ai-left .lovart-menu-wrap:not(.lovart-glossary-wrap) .lovart-pill > span {
+  min-width: 96px;
 }
 
 .lovart-menu.lovart-utility-pop {

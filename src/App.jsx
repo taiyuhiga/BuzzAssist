@@ -1274,7 +1274,9 @@ function getPanelPlacementFromViewportTarget(target, kind = 'image') {
   const panelWidth = isVideo
     ? Math.min(GENERATOR_PANEL_VIDEO_WIDTH, maxPanelWidth)
     : kind === 'subtitle' || kind === 'silenceCut'
-      ? Math.min(clamp(Math.round(frameViewportWidth * 0.9), 420, 560), maxPanelWidth)
+      // The portrait SRT frame fits at a small zoom, so 0.9x its viewport
+      // width would collapse the bar pills; keep the desktop's max width.
+      ? Math.min(560, maxPanelWidth)
       : Math.min(clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH), maxPanelWidth)
   const rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
   const rawTop = Math.round((Number(target?.top) || 0) + frameViewportHeight + 4)
@@ -6533,10 +6535,25 @@ export default function App() {
                         </button>
                       ))
                     ) : (
-                      <button type="button" onClick={() => setOpenMenu(null)}>
-                        <span>{frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}</span>
-                        <span className="menu-check">✓</span>
-                      </button>
+                      // Each subtitle mode has exactly one model, so picking
+                      // the other model switches the mode with it.
+                      [
+                        ['scripted', 'ElevenLabs Forced Alignment'],
+                        ['scriptless', 'ElevenLabs Scribe v2']
+                      ].map(([mode, label]) => (
+                        <button
+                          type="button"
+                          key={mode}
+                          onClick={() => {
+                            updateFrameForm('subtitleMode', mode)
+                            setOpenMenu(null)
+                          }}
+                        >
+                          <span>{label}</span>
+                          <span className="menu-right">{mode === 'scripted' ? '台本あり' : '台本なし'}</span>
+                          {frameForm.subtitleMode === mode ? <span className="menu-check">✓</span> : null}
+                        </button>
+                      ))
                     )}
                   </div>
                 ) : null}
