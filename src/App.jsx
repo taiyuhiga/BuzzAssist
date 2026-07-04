@@ -4272,18 +4272,27 @@ export default function App() {
     const target = videoFrameUploadTargetRef.current
     const expectedKind = getUploadTargetKind(target)
     restoreGeneratorUploadFrame()
+    setGenerationError('')
     try {
-      const assets = (await Promise.all(files.map(uploadAssetFile))).filter(
+      const uploaded = await Promise.all(files.map(uploadAssetFile))
+      const assets = uploaded.filter(
         (asset) =>
           asset.kind === expectedKind ||
           (target === 'subtitleAudio' && asset.kind === 'video') ||
           (target === 'silenceCutVideo' && /\.xml$/i.test(asset.name || asset.path || ''))
       )
+      if (assets.length === 0) {
+        // Files uploaded but none matched this slot — surface it instead of
+        // silently doing nothing.
+        const need = expectedKind === 'video' ? '動画' : expectedKind === 'audio' ? '音声' : '画像'
+        setGenerationError(`この枠には${need}ファイルを追加してください。`)
+        return
+      }
       for (const asset of assets) {
         addAssetToFrame(target, asset)
       }
     } catch (error) {
-      setGenerationError(error.message)
+      setGenerationError(error.message || 'アップロードに失敗しました。')
     }
   }, [addAssetToFrame, restoreGeneratorUploadFrame, uploadAssetFile])
 
