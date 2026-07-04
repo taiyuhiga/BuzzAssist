@@ -116,6 +116,7 @@ const DEFAULT_FRAME_FORM = {
   silenceCutCoughRemoval: 0,
   silenceCutRetakeRemoval: 0,
   silenceCutVideo: null,
+  silenceCutOutput: null,
   silenceCutDetectSeconds: 0.6,
   silenceCutKeepSeconds: 0.25,
   silenceCutThresholdDb: -34,
@@ -443,14 +444,97 @@ function getUploadTargetAccept(target) {
   return 'image/*'
 }
 
-function triggerAssetDownload(assetUrl, fileName = '') {
-  if (!assetUrl || typeof document === 'undefined') return
+function downloadUrlWithAttachment(url) {
+  if (!url) return ''
+  return `${url}${url.includes('?') ? '&' : '?'}download=1`
+}
+
+function triggerDownloadUrl(url, fileName = '') {
+  if (!url || typeof document === 'undefined') return
   const anchor = document.createElement('a')
-  anchor.href = `${assetUrl}${assetUrl.includes('?') ? '&' : '?'}download=1`
+  anchor.href = url
   if (fileName) anchor.download = fileName
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
+}
+
+function triggerAssetDownload(assetUrl, fileName = '') {
+  triggerDownloadUrl(downloadUrlWithAttachment(assetUrl), fileName)
+}
+
+function filePickerTypesForName(fileName) {
+  const rawName = String(fileName || '')
+  const dot = rawName.lastIndexOf('.')
+  const ext = dot >= 0 ? rawName.slice(dot).toLowerCase() : '.bin'
+  const mime =
+    ext === '.zip' ? 'application/zip' :
+      ext === '.srt' ? 'application/x-subrip' :
+        ext === '.xml' ? 'application/xml' :
+          ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext) ? `image/${ext === '.jpg' ? 'jpeg' : ext.slice(1)}` :
+            ['.mp4', '.m4v'].includes(ext) ? 'video/mp4' :
+              ext === '.mov' ? 'video/quicktime' :
+                ext === '.webm' ? 'video/webm' :
+                  'application/octet-stream'
+  return [{ description: 'Download', accept: { [mime]: [ext] } }]
+}
+
+async function saveUrlWithPicker(url, fileName = 'download', fallbackUrl = url) {
+  if (!url || typeof window === 'undefined') return false
+  const suggestedName = fileName || assetFileNameFromUrl(url) || 'download'
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: filePickerTypesForName(suggestedName)
+      })
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`)
+      const writable = await handle.createWritable()
+      if (response.body?.pipeTo) {
+        await response.body.pipeTo(writable)
+      } else {
+        await writable.write(await response.blob())
+        await writable.close()
+      }
+      return true
+    } catch (error) {
+      if (error?.name === 'AbortError') return false
+      console.warn(error)
+    }
+  }
+  triggerDownloadUrl(fallbackUrl, suggestedName)
+  return false
+}
+
+function saveAssetWithPicker(assetUrl, fileName = '') {
+  const suggestedName = fileName || assetFileNameFromUrl(assetUrl) || 'download'
+  return saveUrlWithPicker(assetUrl, suggestedName, downloadUrlWithAttachment(assetUrl))
+}
+
+function saveArchiveWithPicker(archiveUrl, fileName = 'excalidraw-assets.zip') {
+  return saveUrlWithPicker(archiveUrl, fileName, archiveUrl)
+}
+
+function assetFileNameFromUrl(assetUrl) {
+  if (!assetUrl) return ''
+  try {
+    const url = new URL(assetUrl, window.location.origin)
+    if (!url.pathname.startsWith(CANVAS_ASSETS_ROUTE)) return ''
+    return decodeURIComponent(url.pathname.slice(CANVAS_ASSETS_ROUTE.length))
+  } catch {
+    const clean = String(assetUrl).split('?')[0]
+    if (!clean.startsWith(CANVAS_ASSETS_ROUTE)) return ''
+    return decodeURIComponent(clean.slice(CANVAS_ASSETS_ROUTE.length))
+  }
+}
+
+function archiveUrlForAssets(assets) {
+  const names = Array.from(new Set(assets.map((asset) => assetFileNameFromUrl(asset.assetUrl)).filter(Boolean)))
+  if (names.length === 0) return ''
+  const params = new URLSearchParams()
+  names.forEach((name) => params.append('file', name))
+  return `/api/assets/archive?${params.toString()}`
 }
 
 function getCanvasPickTargetFromEventTarget(target) {
@@ -1217,6 +1301,7 @@ function sanitizeGeneratorCustomData(customData) {
   setValue('videoEndFrameAsset', sanitizeAsset(next.videoEndFrameAsset))
   setValue('subtitleAudioAsset', sanitizeAsset(next.subtitleAudioAsset))
   setValue('silenceCutVideoAsset', sanitizeAsset(next.silenceCutVideoAsset))
+  setValue('silenceCutOutputAsset', sanitizeAsset(next.silenceCutOutputAsset))
   return changed ? next : customData
 }
 
@@ -1877,6 +1962,9 @@ function frameFormFromElement(element) {
     silenceCutVideo: customData.silenceCutVideoAsset && typeof customData.silenceCutVideoAsset === 'object'
       ? customData.silenceCutVideoAsset
       : null,
+    silenceCutOutput: customData.silenceCutOutputAsset && typeof customData.silenceCutOutputAsset === 'object'
+      ? customData.silenceCutOutputAsset
+      : null,
     silenceCutDetectSeconds: clamp(finiteNumberOr(customData.silenceCutDetectSeconds, DEFAULT_FRAME_FORM.silenceCutDetectSeconds), 0.3, 2),
     silenceCutKeepSeconds: clamp(finiteNumberOr(customData.silenceCutKeepSeconds, DEFAULT_FRAME_FORM.silenceCutKeepSeconds), 0, 1),
     silenceCutThresholdDb: clamp(finiteNumberOr(customData.silenceCutThresholdDb, DEFAULT_FRAME_FORM.silenceCutThresholdDb), -60, -20),
@@ -1921,7 +2009,8 @@ function frameCustomDataFromForm(kind, form) {
       silenceCutThresholdAuto: form.silenceCutThresholdAuto,
       silenceCutPreMarginSeconds: form.silenceCutPreMarginSeconds,
       silenceCutPostMarginSeconds: form.silenceCutPostMarginSeconds,
-      silenceCutVideoAsset: form.silenceCutVideo || null
+      silenceCutVideoAsset: form.silenceCutVideo || null,
+      silenceCutOutputAsset: form.silenceCutOutput || null
     }
   }
   if (kind === 'lovart') {
@@ -1969,6 +2058,7 @@ function buildFrameOverlays(scene) {
     .filter(isGeneratorFrame)
     .map((element) => {
       const kind = getGeneratorKind(element)
+      const customData = element.customData ?? {}
       const pixelWidth = Number(element.customData?.pixelWidth) || Math.round(element.width * 4)
       const pixelHeight = Number(element.customData?.pixelHeight) || Math.round(element.height * 4)
       const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
@@ -1976,6 +2066,7 @@ function buildFrameOverlays(scene) {
         id: element.id,
         kind,
         isSelected: selectedIds.has(element.id),
+        outputAsset: kind === 'silenceCut' ? (customData.silenceCutOutputAsset || null) : null,
         // MCP/batch jobs mark their placeholder frames so the browser shows
         // the Generating... overlay for work it did not start itself.
         remoteGenerating: element.customData?.codexGenerating === true,
@@ -5019,6 +5110,48 @@ export default function App() {
           const total = Math.max(0, Math.round(Number(seconds) || 0))
           return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
         }
+        const outputAsset = {
+          id: crypto.randomUUID(),
+          name: payload.fileName || 'jetcut.xml',
+          kind: 'xml',
+          mimeType: 'application/xml',
+          path: payload.assetPath || '',
+          url: payload.assetUrl || '',
+          dataURL: '',
+          thumbnail: '',
+          duration: 0
+        }
+        const nextForm = { ...savedForm, silenceCutOutput: outputAsset }
+        const currentElements = api.getSceneElementsIncludingDeleted()
+        const nextElements = currentElements.map((element) =>
+          element.id === anchorElementId
+            ? {
+                ...element,
+                customData: {
+                  ...(element.customData ?? {}),
+                  ...frameCustomDataFromForm(kind, nextForm)
+                },
+                version: (Number(element.version) || 1) + 1,
+                versionNonce: Math.floor(Math.random() * 2 ** 31),
+                updated: Date.now()
+              }
+            : element
+        )
+        const appState = {
+          ...(api.getAppState?.() ?? latestSceneRef.current.appState),
+          selectedElementIds: { [anchorElementId]: true }
+        }
+        const nextScene = createScene(nextElements, appState, api.getFiles())
+        latestSceneRef.current = nextScene
+        suppressNextChangeRef.current = true
+        api.updateScene({
+          elements: nextElements,
+          appState: { selectedElementIds: { [anchorElementId]: true } },
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY
+        })
+        refreshOverlayStates(nextScene)
+        scheduleCanvasSave(nextScene)
+        scheduleSelectionSave(nextScene)
         setSilenceCutNotice(
           `${formatClock(payload.inputDuration)} → ${formatClock(payload.outputDuration)}（−${formatClock(payload.cutDuration)}・${payload.cutCount}箇所）${payload.fileName} を書き出しました`
         )
@@ -5027,14 +5160,7 @@ export default function App() {
         lastFocusedFrameIdRef.current = anchorElementId
         setActiveFrameId(anchorElementId)
         setActiveFrameKind(kind)
-        setFrameForm(savedForm)
-        suppressNextChangeRef.current = true
-        window.setTimeout(() => {
-          api.updateScene({
-            appState: { selectedElementIds: { [anchorElementId]: true } },
-            captureUpdate: CaptureUpdateAction.NEVER
-          })
-        }, 0)
+        setFrameForm(nextForm)
         return
       }
       const canvasResponse = await fetch(CANVAS_ENDPOINT)
@@ -5583,29 +5709,39 @@ export default function App() {
       })}
       {(() => {
         // Lovart-style selection toolbar: click or marquee-select any media
-        // (image / video / SRT card) and a floating toolbar appears above the
-        // selection bounds with a download button. Multiple assets download
-        // directly instead of building a ZIP, so large videos don't block the UI.
+        // (image / video / SRT card / silence-cut XML output) and a floating
+        // toolbar appears above the selection bounds with a download button.
+        // Multiple assets download as one streaming ZIP instead of firing many
+        // slow browser downloads.
+        const selectedXmlOutputs = frameOverlays
+          .filter((overlay) => overlay.isSelected && overlay.kind === 'silenceCut' && overlay.outputAsset?.url)
+          .map((overlay) => ({
+            ...overlay,
+            assetType: 'xml',
+            assetUrl: overlay.outputAsset.url,
+            fileName: overlay.outputAsset.name || assetFileNameFromUrl(overlay.outputAsset.url) || 'jetcut.xml'
+          }))
         const selectedMedia = [
           ...selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl),
           ...subtitlePreviewOverlays
             .filter((overlay) => overlay.isSelected && overlay.assetUrl)
-            .map((overlay) => ({ ...overlay, assetType: 'srt' }))
+            .map((overlay) => ({ ...overlay, assetType: 'srt' })),
+          ...selectedXmlOutputs
         ]
         if (selectedMedia.length === 0) return null
         const boundsLeft = Math.min(...selectedMedia.map((overlay) => overlay.left))
         const boundsRight = Math.max(...selectedMedia.map((overlay) => overlay.left + overlay.width))
         const boundsTop = Math.min(...selectedMedia.map((overlay) => overlay.top))
         const single = selectedMedia.length === 1
-        const downloadSelectedMedia = () => {
+        const archiveUrl = single ? '' : archiveUrlForAssets(selectedMedia)
+        const downloadSelectedMedia = async () => {
+          if (!archiveUrl) return
           setBulkDownloading(true)
-          selectedMedia.forEach((overlay, index) => {
-            window.setTimeout(() => {
-              const fileName = decodeURIComponent(overlay.assetUrl.split('/').pop().split('?')[0] || '')
-              triggerAssetDownload(overlay.assetUrl, fileName)
-            }, index * 70)
-          })
-          window.setTimeout(() => setBulkDownloading(false), Math.min(1500, 160 + selectedMedia.length * 70))
+          try {
+            await saveArchiveWithPicker(archiveUrl, 'excalidraw-assets.zip')
+          } finally {
+            setBulkDownloading(false)
+          }
         }
         return (
           <div
@@ -5639,21 +5775,24 @@ export default function App() {
               </button>
             ) : null}
             {single ? (
-              <a
+              <button
+                type="button"
                 className="lovart-selection-toolbar-btn"
-                href={`${selectedMedia[0].assetUrl}?download=1`}
-                download
                 title="ダウンロード"
-                onClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  const target = selectedMedia[0]
+                  saveAssetWithPicker(target.assetUrl, target.fileName || assetFileNameFromUrl(target.assetUrl) || 'download')
+                }}
               >
                 <DownloadIcon size={15} />
-              </a>
+              </button>
             ) : (
               <button
                 type="button"
                 className="lovart-selection-toolbar-btn"
-                disabled={bulkDownloading}
-                title={bulkDownloading ? '開始中…' : `${selectedMedia.length}件をダウンロード`}
+                disabled={bulkDownloading || !archiveUrl}
+                title={bulkDownloading ? '開始中…' : `${selectedMedia.length}件をZIPでダウンロード`}
                 onClick={downloadSelectedMedia}
               >
                 <DownloadIcon size={15} />
@@ -6648,7 +6787,19 @@ export default function App() {
           </div>
           {generationError ? <div className="lovart-error">{generationError}</div> : null}
           {isSilencePanel && silenceCutNotice && !generationError ? (
-            <div className="lovart-notice">{silenceCutNotice}</div>
+            <div className="lovart-notice">
+              <span>{silenceCutNotice}</span>
+              {frameForm.silenceCutOutput?.url ? (
+                <button
+                  type="button"
+                  className="lovart-notice-download"
+                  onClick={() => saveAssetWithPicker(frameForm.silenceCutOutput.url, frameForm.silenceCutOutput.name || 'jetcut.xml')}
+                >
+                  <DownloadIcon size={13} />
+                  <span>XML</span>
+                </button>
+              ) : null}
+            </div>
           ) : null}
           <div className="lovart-ai-bottom">
             <div className="lovart-ai-left">
