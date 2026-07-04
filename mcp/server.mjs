@@ -894,7 +894,7 @@ async function generateExcalidrawImagesBatch(args = {}) {
         columns,
         gap,
         selectCreated: args.selectCreated !== false,
-        focusCreated: args.focusCreated !== false,
+        focusCreated: args.focusCreated === true,
       });
 
   let writeQueue = Promise.resolve();
@@ -1011,7 +1011,7 @@ async function generateExcalidrawVideosBatch(args = {}) {
         columns,
         gap,
         selectCreated: args.selectCreated !== false,
-        focusCreated: args.focusCreated !== false,
+        focusCreated: args.focusCreated === true,
       });
 
   let writeQueue = Promise.resolve();
@@ -1378,7 +1378,7 @@ function toolDefinitions() {
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
-          focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to true." },
+          focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to false; leave unset to avoid moving the user's current canvas view." },
           confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },
@@ -1429,7 +1429,7 @@ function toolDefinitions() {
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
-          focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to true." },
+          focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to false; leave unset to avoid moving the user's current canvas view." },
           confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },

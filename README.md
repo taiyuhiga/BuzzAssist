@@ -97,12 +97,12 @@ Generation extras:
 
 ## Batch Generation
 
-Generate many images or videos in one call. The MCP batch tools first place Youtube-AGI-style generator frames as a grid below existing canvas content, focus the viewport on that created grid, then run jobs with bounded concurrency and replace each frame as its media result finishes.
+Generate many images or videos in one call. The MCP batch tools first place Youtube-AGI-style generator frames as a grid below existing canvas content, keep the user's current canvas view in place by default, then run jobs with bounded concurrency and replace each frame as its media result finishes.
 
 MCP tools:
 
-- `generate_excalidraw_images_batch`: `{ jobs: [{ prompt, model?, aspectRatio?, imageSize?, quality?, referenceImagePaths?, fileName? }], columns?=4, gap?=24, concurrency?=3, focusCreated?=true, projectDir?, canvasDir?, dryRun? }`
-- `generate_excalidraw_videos_batch`: `{ jobs: [{ prompt, model?, aspectRatio?, duration?, resolution?, generateAudio?, referenceImagePaths?, fileName? }], columns?=3, gap?=24, concurrency?=1, focusCreated?=true, projectDir?, canvasDir?, dryRun? }`
+- `generate_excalidraw_images_batch`: `{ jobs: [{ prompt, model?, aspectRatio?, imageSize?, quality?, referenceImagePaths?, fileName? }], columns?=4, gap?=24, concurrency?=3, focusCreated?=false, projectDir?, canvasDir?, dryRun? }`
+- `generate_excalidraw_videos_batch`: `{ jobs: [{ prompt, model?, aspectRatio?, duration?, resolution?, generateAudio?, referenceImagePaths?, fileName? }], columns?=3, gap?=24, concurrency?=1, focusCreated?=false, projectDir?, canvasDir?, dryRun? }`
 
 Both return `{ ok, total, succeeded, failed, results: [{ prompt, elementId, fileId, bounds, error? }] }`.
 

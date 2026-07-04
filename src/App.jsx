@@ -45,7 +45,6 @@ const GENERATOR_FRAME_MIN_SCENE_SIZE = 140
 const GENERATOR_PANEL_IMAGE_MIN_WIDTH = 420
 const GENERATOR_PANEL_IMAGE_MAX_WIDTH = 560
 const GENERATOR_PANEL_VIDEO_WIDTH = 580
-const GENERATOR_SCROLL_ANIMATION_MS = 600
 const SAVE_DELAY_MS = 450
 const SELECTION_DELAY_MS = 180
 const CANVAS_ASSETS_ROUTE = '/excalidraw-assets/'
@@ -567,7 +566,53 @@ function LovartGeneratorToolIcon() {
   )
 }
 
+// Use the same real provider favicons as the original model picker. The local
+// glyphs are only a fallback for offline/error cases.
+const PROVIDER_FAVICON_DOMAINS = {
+  midjourney: 'midjourney.com',
+  'nano-banana': 'deepmind.google',
+  openai: 'openai.com',
+  luma: 'lumalabs.ai',
+  flux: 'bfl.ai',
+  seedream: 'seed.bytedance.com',
+  seedance: 'seed.bytedance.com',
+  kling: 'klingai.com',
+  ideogram: 'ideogram.ai',
+  veo: 'deepmind.google',
+  gemini: 'gemini.google.com',
+  hailuo: 'hailuoai.video',
+  wan: 'wan.video',
+  vidu: 'vidu.com',
+  grok: 'x.ai',
+  codex: 'openai.com',
+  lovart: 'lovart.ai',
+  buzzassist: 'buzzassist.ai'
+}
+
 function ModelProviderIcon({ provider, size = 16 }) {
+  const [faviconFailed, setFaviconFailed] = useState(false)
+  const domain = PROVIDER_FAVICON_DOMAINS[provider]
+
+  useEffect(() => {
+    setFaviconFailed(false)
+  }, [domain])
+
+  if (domain && !faviconFailed) {
+    return (
+      <img
+        src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`}
+        width={size}
+        height={size}
+        alt=""
+        loading="eager"
+        decoding="async"
+        draggable={false}
+        style={{ borderRadius: 4, display: 'block' }}
+        onError={() => setFaviconFailed(true)}
+      />
+    )
+  }
+
   return <ModelProviderGlyph provider={provider} size={size} />
 }
 
@@ -2605,8 +2650,6 @@ export default function App() {
   const lastFocusedFrameIdRef = useRef('')
   const lastCreatedFrameGeoRef = useRef(null)
   const lastCreatedViewRef = useRef(null)
-  const isAnimatingScrollRef = useRef(false)
-  const scrollAnimGenerationRef = useRef(0)
   const isDraggingGeneratorRef = useRef(false)
   const lastPointerDownCanvasRef = useRef(null)
   const suppressNextChangeRef = useRef(false)
@@ -4270,12 +4313,10 @@ export default function App() {
       const curScrollY = Number(appState.scrollY) || 0
       const curZoom = Number(appState.zoom?.value) || 1
       const lastView = lastCreatedViewRef.current
-      const viewportMoved = isAnimatingScrollRef.current
-        ? false
-        : !lastView ||
-          Math.abs(lastView.scrollX - curScrollX) > 1 ||
-          Math.abs(lastView.scrollY - curScrollY) > 1 ||
-          Math.abs(lastView.zoom - curZoom) > 0.01
+      const viewportMoved = !lastView ||
+        Math.abs(lastView.scrollX - curScrollX) > 1 ||
+        Math.abs(lastView.scrollY - curScrollY) > 1 ||
+        Math.abs(lastView.zoom - curZoom) > 0.01
       const lastGeo = !viewportMoved ? lastCreatedFrameGeoRef.current : null
       const center = viewportCenter(appState)
       let frameX = lastGeo
@@ -4284,15 +4325,12 @@ export default function App() {
       let frameY = lastGeo
         ? Math.round(lastGeo.y + lastGeo.height + 14)
         : Math.round(center.y - size.height / 2 + (kind === 'video' ? -90 : -10))
-      const originalFrameX = frameX
-      const originalFrameY = frameY
       // Always resolve collisions — repeated rail clicks used to stack frames
       // straight onto existing media because the check only ran after the
       // viewport moved.
       const placement = findNonOverlappingPlacement(elements, { x: frameX, y: frameY, width: size.width, height: size.height })
       frameX = placement.x
       frameY = placement.y
-      const wasOverlapping = frameX !== originalFrameX || frameY !== originalFrameY
 
       const [frame] = convertToExcalidrawElements(
         [
@@ -4328,74 +4366,10 @@ export default function App() {
         index: chooseIndex(elements)
       }
       const nextElements = [...elements, nextFrame]
-      const viewportWidth = Number(appState.width) || 0
-      const viewportHeight = Number(appState.height) || 0
-      const targetScreenRatio = kind === 'video' || kind === 'silenceCut' ? 0.36 : kind === 'subtitle' ? 0.4 : 0.44
-      const panelReserve = generatorPanelReserveFor(kind)
-      // Screen Y for the frame center: prefer the kind's ratio, but clamp so
-      // the frame clears the top toolbar and leaves room for the panel below.
-      const frameScreenYFor = (zoom) => {
-        const displayHalf = (size.height * zoom) / 2
-        return Math.max(
-          GENERATOR_FRAME_TOP_RESERVE + displayHalf + 8,
-          Math.min(viewportHeight * targetScreenRatio, Math.max(120, viewportHeight - panelReserve - displayHalf - 8))
-        )
-      }
-      let nextScrollX = curScrollX
-      let nextScrollY = curScrollY
-      let nextZoom = curZoom
-      let shouldAnimate = false
-      let targetScrollX = curScrollX
-      let targetScrollY = curScrollY
-      let targetZoom = curZoom
-
-      if (viewportWidth > 0 && viewportHeight > 0) {
-        const frameCenterX = frameX + size.width / 2
-        const frameCenterY = frameY + size.height / 2
-        const targetScreenX = viewportWidth / 2
-        if (viewportMoved) {
-          // Creating a frame always lands at the kind's target zoom (capped
-          // so frame + panel fit the viewport) — zooming in from a far view
-          // as well as out from a too-close one.
-          const fitZoom = fittedGeneratorZoom(
-            kind,
-            size,
-            viewportWidth,
-            viewportHeight,
-            generatorCreateZoomFor(kind)
-          )
-          if (wasOverlapping || Math.abs(curZoom - fitZoom) > 0.01) {
-            targetZoom = fitZoom
-            shouldAnimate = true
-          }
-          const useZoom = shouldAnimate ? targetZoom : curZoom
-          const targetScreenY = frameScreenYFor(useZoom)
-          if (shouldAnimate) {
-            targetScrollX = targetScreenX / useZoom - frameCenterX
-            targetScrollY = targetScreenY / useZoom - frameCenterY
-          } else {
-            nextScrollX = targetScreenX / useZoom - frameCenterX
-            nextScrollY = targetScreenY / useZoom - frameCenterY
-          }
-        } else {
-          const frameTopScreen = (frameY + curScrollY) * curZoom
-          const frameBottomScreen = (frameY + size.height + curScrollY) * curZoom
-          if (frameBottomScreen + panelReserve > viewportHeight || frameTopScreen < GENERATOR_FRAME_TOP_RESERVE) {
-            shouldAnimate = true
-            targetZoom = fittedGeneratorZoom(kind, size, viewportWidth, viewportHeight, generatorCreateZoomFor(kind))
-            const targetScreenY = frameScreenYFor(targetZoom)
-            targetScrollX = targetScreenX / targetZoom - frameCenterX
-            targetScrollY = targetScreenY / targetZoom - frameCenterY
-          }
-        }
-      }
-
       const selectedElementIds = selectFrame ? { [nextFrame.id]: true } : {}
       const nextAppState = {
         ...appState,
-        selectedElementIds,
-        scrollX: shouldAnimate ? targetScrollX : nextScrollX,
-        scrollY: nextScrollY
+        selectedElementIds
       }
 
       suppressNextChangeRef.current = true
@@ -4405,64 +4379,12 @@ export default function App() {
       api.updateScene({
         elements: nextElements,
         appState: {
-          selectedElementIds,
-          scrollX: shouldAnimate ? targetScrollX : nextScrollX,
-          scrollY: nextScrollY
+          selectedElementIds
         },
         captureUpdate: CaptureUpdateAction.IMMEDIATELY
       })
 
-      if (shouldAnimate) {
-        lastCreatedViewRef.current = { scrollX: targetScrollX, scrollY: targetScrollY, zoom: targetZoom }
-        isAnimatingScrollRef.current = true
-        const generation = ++scrollAnimGenerationRef.current
-        const startTime = performance.now()
-        const startScrollY = nextScrollY
-        const startZoom = curZoom
-        const easeOutCubic = (t) => 1 - (1 - t) ** 3
-        const animateStep = (now) => {
-          if (generation !== scrollAnimGenerationRef.current) return
-          const rawProgress = Math.min((now - startTime) / GENERATOR_SCROLL_ANIMATION_MS, 1)
-          const progress = easeOutCubic(rawProgress)
-          const zoom = startZoom + (targetZoom - startZoom) * progress
-          const frameCenterX = frameX + size.width / 2
-          const scrollX = viewportWidth / (2 * zoom) - frameCenterX
-          const scrollY = startScrollY + (targetScrollY - startScrollY) * progress
-              api.updateScene({
-                appState: {
-                  zoom: { value: zoom },
-                  scrollX,
-                  scrollY
-                },
-                captureUpdate: CaptureUpdateAction.NEVER
-              })
-              const animatedScene = createScene(
-                nextElements,
-                {
-                  ...appState,
-                  selectedElementIds,
-                  zoom: { value: zoom },
-                  scrollX,
-                  scrollY
-                },
-                api.getFiles()
-              )
-              latestSceneRef.current = animatedScene
-              refreshOverlayStates(animatedScene)
-              if (rawProgress < 1) {
-                requestAnimationFrame(animateStep)
-              } else {
-                isAnimatingScrollRef.current = false
-                lastCreatedViewRef.current = { scrollX, scrollY, zoom }
-            const finalScene = createScene(api.getSceneElementsIncludingDeleted(), api.getAppState(), api.getFiles())
-            latestSceneRef.current = finalScene
-            scheduleCanvasSave(finalScene)
-          }
-        }
-        requestAnimationFrame(animateStep)
-      } else if (!isAnimatingScrollRef.current) {
-        lastCreatedViewRef.current = { scrollX: nextScrollX, scrollY: nextScrollY, zoom: nextZoom }
-      }
+      lastCreatedViewRef.current = { scrollX: curScrollX, scrollY: curScrollY, zoom: curZoom }
 
       if (openPanel) {
         activeFrameIdRef.current = nextFrame.id
