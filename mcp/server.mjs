@@ -62,7 +62,7 @@ const MEDIA_GENERATION_AGENT_INSTRUCTIONS = [
   "Before generating subtitles, confirm when missing: mode (scripted needs the script text; scriptless transcribes), lineCount (1 or 2), and maxCharsPerLine. Defaults to offer as Recommended are scriptless, 2 lines, 30 chars.",
   "Before silence-cutting, confirm when missing: model (ffmpeg-local jet-cut, or elevenlabs-scribe-v2 for AI cleanup of fillers/coughs/retakes) and for scribe the removal intensities (0/25/50/80, defaults 50/50/0). Default model to offer as Recommended is ffmpeg-local.",
   "The project-common 用語辞書 (canvas/subtitle-glossary.json, editable from the SRT panel's 用語 pill) is merged into every subtitle/scribe transcription automatically.",
-  "Canvas tools auto-start the local canvas server and open it in the browser once when no tab is connected (set EXCALIDRAW_NO_AUTO_OPEN=1 to disable).",
+  "Canvas tools auto-start the local canvas server when it is not running. In Claude Code, open the canvas in the HOST'S IN-APP BROWSER instead of an external one: call the preview tools (preview_start with the 'canvas' config from .claude/launch.json, or open http://127.0.0.1:43219 in the built-in preview). Outside Claude Code the server opens a browser window once when no tab is connected (EXCALIDRAW_NO_AUTO_OPEN=1 disables).",
   "When an attached or selected image/video could be used in more than one way, ask one disambiguation question before generation. For video, distinguish start frame/image-to-video from style reference; do not silently put the same media into multiple payload fields.",
   "For choice questions, keep options short and mark the default with (Recommended) in English or （推奨） in Japanese. Do not ask when only one value is valid.",
 ].join(" ");
@@ -94,6 +94,97 @@ async function fetchJsonQuick(url, timeoutMs = 1500) {
   }
 }
 
+function runQuick(command, commandArgs, timeoutMs = 8000) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, commandArgs, { stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      rejectRun(new Error("timeout"));
+    }, timeoutMs);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      rejectRun(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveRun();
+      else rejectRun(new Error(`exit ${code}`));
+    });
+  });
+}
+
+async function getMacScreenBounds() {
+  try {
+    const script = 'tell application "Finder" to get bounds of window of desktop';
+    const result = await new Promise((resolveRun, rejectRun) => {
+      const child = spawn("osascript", ["-e", script]);
+      let stdout = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.on("error", rejectRun);
+      child.on("close", () => resolveRun(stdout));
+    });
+    const parts = String(result).trim().split(",").map((value) => Number.parseInt(value.trim(), 10));
+    if (parts.length === 4 && parts.every(Number.isFinite)) {
+      return { width: parts[2], height: parts[3] };
+    }
+  } catch {
+    // fall through to the default bounds
+  }
+  return { width: 1440, height: 900 };
+}
+
+// "In-app browser" feel: hosts (Claude Code / Codex) expose no API to dock a
+// panel inside their window, so the closest match is a chromeless app-mode
+// window pinned to the right half of the screen. Falls back to the default
+// browser when no Chromium-family browser is installed.
+// EXCALIDRAW_OPEN_MODE=browser forces a plain tab; =none disables opening.
+async function openCanvasWindow(baseUrl) {
+  const mode = String(process.env.EXCALIDRAW_OPEN_MODE || "app").toLowerCase();
+  if (mode === "none") return;
+  // Under Claude Code the host has an in-app browser — the agent opens the
+  // canvas there (see MCP instructions), so never spawn an external window.
+  if (process.env.CLAUDECODE || process.env.CLAUDE_CODE_ENTRYPOINT) return;
+  if (mode !== "browser" && process.platform === "darwin") {
+    const bounds = await getMacScreenBounds();
+    const width = Math.round(bounds.width / 2);
+    const height = bounds.height;
+    const x = bounds.width - width;
+    for (const app of ["Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"]) {
+      try {
+        await runQuick("open", ["-na", app, "--args", `--app=${baseUrl}`, `--window-size=${width},${height}`, `--window-position=${x},0`]);
+        return;
+      } catch {
+        // try the next browser
+      }
+    }
+  }
+  if (mode !== "browser" && process.platform === "win32") {
+    for (const exe of ["chrome", "msedge"]) {
+      try {
+        await runQuick("cmd", ["/c", "start", "", exe, `--app=${baseUrl}`]);
+        return;
+      } catch {
+        // try the next browser
+      }
+    }
+  }
+  if (mode !== "browser" && process.platform === "linux") {
+    for (const exe of ["google-chrome", "chromium", "chromium-browser"]) {
+      try {
+        await runQuick(exe, [`--app=${baseUrl}`]);
+        return;
+      } catch {
+        // try the next browser
+      }
+    }
+  }
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const openerArgs = process.platform === "win32" ? ["/c", "start", "", baseUrl] : [baseUrl];
+  spawn(opener, openerArgs, { detached: true, stdio: "ignore" }).unref();
+}
+
 async function ensureCanvasVisible(args = {}) {
   if (canvasAutoOpenAttempted) return;
   canvasAutoOpenAttempted = true;
@@ -119,9 +210,7 @@ async function ensureCanvasVisible(args = {}) {
       }
     }
     if (status && Number(status.clients) === 0) {
-      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-      const openerArgs = process.platform === "win32" ? ["/c", "start", "", baseUrl] : [baseUrl];
-      spawn(opener, openerArgs, { detached: true, stdio: "ignore" }).unref();
+      await openCanvasWindow(baseUrl);
     }
   } catch {
     // best-effort — never block the tool call
