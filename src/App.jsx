@@ -2471,7 +2471,11 @@ function createImageElementRecord({ fileId, bounds, index, customData }) {
 // Youtube-AGI uses 1.25 for the tall subtitle/silence-cut generators
 // (SUBTITLE_GENERATOR_CREATE_ZOOM) and 2 for image/video.
 function generatorCreateZoomFor(kind) {
-  return kind === 'subtitle' || kind === 'silenceCut' ? 1.25 : 2
+  // Same target zoom for every generator — fittedGeneratorZoom caps it so
+  // the frame plus its panel always fit inside the viewport (the tall SRT
+  // frame simply clamps lower). The old 1.25 made SRT/silence frames feel
+  // needlessly far away.
+  return 2
 }
 
 // Vertical viewport space to reserve for the input panel below the frame.
@@ -2528,6 +2532,8 @@ export default function App() {
   const [managedSelectionActive, setManagedSelectionActive] = useState(false)
   const [lovartAuth, setLovartAuth] = useState(null)
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
+  const [lovartKeyEditing, setLovartKeyEditing] = useState(false)
+  const [hermesStatus, setHermesStatus] = useState(null)
   const [bulkDownloading, setBulkDownloading] = useState(false)
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
@@ -5729,9 +5735,14 @@ export default function App() {
                   data-lovart-tooltip="実行先"
                   onClick={() => {
                     setOpenMenu((current) => (current === 'route' ? null : 'route'))
+                    setLovartKeyEditing(false)
                     fetch('/api/lovart/auth-status')
                       .then((response) => response.json())
                       .then(setLovartAuth)
+                      .catch(() => {})
+                    fetch('/api/hermes/status')
+                      .then((response) => response.json())
+                      .then(setHermesStatus)
                       .catch(() => {})
                   }}
                 >
@@ -5759,44 +5770,85 @@ export default function App() {
                         {activeMediaRouteId === route.id ? <span className="menu-check">✓</span> : null}
                       </button>
                     ))}
-                    {activeMediaFamily?.routes?.lovart && !lovartAuth?.configured ? (
+                    {/* Lovart keys are account-level config — always reachable
+                        from the route menu, whatever model is selected. */}
+                    <div className="lovart-key-form">
+                        <div className="lovart-key-status">
+                          <span>
+                            {lovartAuth?.configured
+                              ? `Lovart APIキー 接続済み: ${lovartAuth.accessKeyPreview ?? ''}`
+                              : 'Lovart APIキー未設定（OpenClaw の ak_/sk_ を入力）'}
+                          </span>
+                          {lovartAuth?.configured ? (
+                            <button
+                              type="button"
+                              className="lovart-key-edit"
+                              onClick={() => setLovartKeyEditing((current) => !current)}
+                            >
+                              {lovartKeyEditing ? '閉じる' : '変更'}
+                            </button>
+                          ) : null}
+                        </div>
+                        {!lovartAuth?.configured || lovartKeyEditing ? (
+                          <>
+                            <input ref={lovartAccessKeyInputRef} type="password" placeholder="ak_..." autoComplete="off" />
+                            <input ref={lovartSecretKeyInputRef} type="password" placeholder="sk_..." autoComplete="off" />
+                            <button
+                              type="button"
+                              className="lovart-key-save"
+                              disabled={lovartKeySaving}
+                              onClick={async () => {
+                                const accessKey = lovartAccessKeyInputRef.current?.value?.trim()
+                                const secretKey = lovartSecretKeyInputRef.current?.value?.trim()
+                                if (!accessKey || !secretKey) {
+                                  setGenerationError('Lovart の Access Key と Secret Key を両方入力してください。')
+                                  return
+                                }
+                                setLovartKeySaving(true)
+                                try {
+                                  const response = await fetch('/api/lovart/credentials', {
+                                    method: 'POST',
+                                    headers: { 'content-type': 'application/json' },
+                                    body: JSON.stringify({ accessKey, secretKey })
+                                  })
+                                  const payload = await response.json()
+                                  if (!response.ok) throw new Error(payload.error || '保存に失敗しました')
+                                  setLovartAuth(payload)
+                                  setGenerationError('')
+                                  setLovartKeyEditing(false)
+                                  if (lovartAccessKeyInputRef.current) lovartAccessKeyInputRef.current.value = ''
+                                  if (lovartSecretKeyInputRef.current) lovartSecretKeyInputRef.current.value = ''
+                                } catch (error) {
+                                  setGenerationError(error.message)
+                                } finally {
+                                  setLovartKeySaving(false)
+                                }
+                              }}
+                            >
+                              {lovartKeySaving ? '保存中…' : '保存'}
+                            </button>
+                          </>
+                        ) : null}
+                    </div>
+                    {(activeMediaFamily?.routes?.hermes && hermesStatus && (!hermesStatus.installed || hermesStatus.session === 'logged-out')) ? (
                       <div className="lovart-key-form">
-                        <div className="lovart-key-status">Lovart APIキー未設定（OpenClaw の ak_/sk_ を入力）</div>
-                        <input ref={lovartAccessKeyInputRef} type="password" placeholder="ak_..." autoComplete="off" />
-                        <input ref={lovartSecretKeyInputRef} type="password" placeholder="sk_..." autoComplete="off" />
+                        <div className="lovart-key-status">
+                          {hermesStatus.installed
+                            ? 'Hermes は未ログインです（X の OAuth が必要）'
+                            : 'Hermes Agent が未インストールです'}
+                        </div>
                         <button
                           type="button"
                           className="lovart-key-save"
-                          disabled={lovartKeySaving}
-                          onClick={async () => {
-                            const accessKey = lovartAccessKeyInputRef.current?.value?.trim()
-                            const secretKey = lovartSecretKeyInputRef.current?.value?.trim()
-                            if (!accessKey || !secretKey) {
-                              setGenerationError('Lovart の Access Key と Secret Key を両方入力してください。')
-                              return
-                            }
-                            setLovartKeySaving(true)
-                            try {
-                              const response = await fetch('/api/lovart/credentials', {
-                                method: 'POST',
-                                headers: { 'content-type': 'application/json' },
-                                body: JSON.stringify({ accessKey, secretKey })
-                              })
-                              const payload = await response.json()
-                              if (!response.ok) throw new Error(payload.error || '保存に失敗しました')
-                              setLovartAuth(payload)
-                              setGenerationError('')
-                              if (lovartAccessKeyInputRef.current) lovartAccessKeyInputRef.current.value = ''
-                              if (lovartSecretKeyInputRef.current) lovartSecretKeyInputRef.current.value = ''
-                            } catch (error) {
-                              setGenerationError(error.message)
-                            } finally {
-                              setLovartKeySaving(false)
-                            }
+                          onClick={() => {
+                            navigator.clipboard?.writeText(
+                              'Hermes Agent で Grok Imagine を使えるようにセットアップして。excalidraw MCP の setup_hermes_grok ツールを実行して、必要なら hermes auth add xai-oauth のブラウザOAuthを完了させて。'
+                            ).catch(() => {})
                           }}
                         >
-                          {lovartKeySaving ? '保存中…' : '保存'}
+                          AIエージェント用セットアッププロンプトをコピー
                         </button>
+                        <div className="lovart-key-hint">Claude Code / Codex に貼り付けると setup_hermes_grok が自動でセットアップします</div>
                       </div>
                     ) : null}
                   </div>
@@ -6368,7 +6420,7 @@ export default function App() {
                 {isCurrentFrameGenerating ? (
                   <span>Generating...</span>
                 ) : (
-                  <span>{activePanelCreditEstimate ? `${activePanelCreditEstimate} 生成` : '生成'}</span>
+                  <span>{(typeof activePanelCreditEstimate === 'number' ? activePanelCreditEstimate : 0).toLocaleString('ja-JP')}</span>
                 )}
               </button>
             </div>
@@ -6642,7 +6694,7 @@ export default function App() {
                 {isCurrentFrameGenerating ? (
                   <span>Generating...</span>
                 ) : (
-                  <span>{activePanelCreditEstimate ? `${activePanelCreditEstimate} 生成` : '生成'}</span>
+                  <span>{(typeof activePanelCreditEstimate === 'number' ? activePanelCreditEstimate : 0).toLocaleString('ja-JP')}</span>
                 )}
               </button>
             </div>

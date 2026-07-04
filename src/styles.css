@@ -1629,3 +1629,33 @@ body {
 .lovart-intensity-row.is-disabled button {
   cursor: default;
 }
+
+/* Route menu: key status row + edit toggle + agent-setup hint */
+.lovart-key-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lovart-key-edit {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  color: #5f6368;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lovart-key-edit:hover {
+  border-color: #c4b5fd;
+  color: #7c3aed;
+}
+
+.lovart-key-hint {
+  color: #9aa0a6;
+  font-size: 10px;
+  line-height: 1.4;
+}

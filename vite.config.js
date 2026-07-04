@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs'
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
-import { generateImageMedia, generateVideoMedia, getGenerationCapabilities, runWithConcurrency } from './lib/mediaGeneration.mjs'
+import { generateImageMedia, generateVideoMedia, getGenerationCapabilities, getHermesStatus, runWithConcurrency } from './lib/mediaGeneration.mjs'
 import { getBuzzAssistAuthStatus, loginBuzzAssistViaBrowser } from './lib/buzzassistApi.mjs'
 import { OFFICIAL_EXCALIDRAW_README, createExcalidrawView, insertExcalidrawImage, insertExcalidrawSubtitle, insertExcalidrawVideo, insertExcalidrawMediaBatch, performCanvasMaintenance, stripAssetBackedFileDataURLs } from './lib/canvasScene.mjs'
 import { buildZipStore } from './lib/zipStore.mjs'
@@ -1249,6 +1249,14 @@ function canvasStoragePlugin() {
           res.statusCode = 405
           res.setHeader('allow', 'GET, PUT')
           res.end()
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      server.middlewares.use('/api/hermes/status', async (req, res) => {
+        try {
+          sendJson(res, 200, await getHermesStatus())
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

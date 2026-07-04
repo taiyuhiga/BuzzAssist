@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import { generateKeyBetween } from "fractional-indexing";
-import { IMAGE_MODELS, VIDEO_MODELS, generateImageMedia, generateVideoMedia, runWithConcurrency } from "../lib/mediaGeneration.mjs";
+import { IMAGE_MODELS, VIDEO_MODELS, generateImageMedia, generateVideoMedia, getHermesStatus, runWithConcurrency, setupHermesGrok } from "../lib/mediaGeneration.mjs";
 import { getBuzzAssistAuthStatus, loginBuzzAssistViaBrowser } from "../lib/buzzassistApi.mjs";
 import {
   OFFICIAL_EXCALIDRAW_README,
@@ -34,6 +34,7 @@ const TOOL_GENERATE_IMAGES_BATCH = "generate_excalidraw_images_batch";
 const TOOL_GENERATE_VIDEOS_BATCH = "generate_excalidraw_videos_batch";
 const TOOL_BUZZASSIST_LOGIN = "buzzassist_login";
 const TOOL_BUZZASSIST_AUTH_STATUS = "buzzassist_auth_status";
+const TOOL_SETUP_HERMES = "setup_hermes_grok";
 const TOOL_GENERATE_SUBTITLES = "generate_excalidraw_subtitles";
 const TOOL_SILENCE_CUT_VIDEO = "silence_cut_excalidraw_video";
 const IMAGE_MODEL_IDS = IMAGE_MODELS.map((model) => model.id);
@@ -49,6 +50,7 @@ const MEDIA_GENERATION_AGENT_INSTRUCTIONS = [
   "When the user refers to canvas items they clicked or range-selected (これ, この画像, 選択したやつ, the selected video, etc.), call get_excalidraw_selection FIRST: each selected media element carries customData.codexAssetPath (local file path) and codexAssetUrl, so the selected images/videos/SRT files can be read directly or passed as generation inputs (start frame, reference images, subtitle audio, silence-cut video). Selection updates live as the user clicks on the canvas.",
   "Use generate_excalidraw_image/generate_excalidraw_video for media generation. Local models: GPT-Image-2.0(Codex), Grok Imagine(Hermes). BuzzAssist cloud models (require buzzassist_login first): images nano-banana-2, gpt-image-2, seedream-v5-lite, grok-imagine-image-api; videos seedance-2, seedance-2-fast, kling-v3, kling-o3, kling-v2-6, grok-imagine-video-api.",
   "Use buzzassist_auth_status to check BuzzAssist sign-in and buzzassist_login to sign in before using BuzzAssist cloud models, cloud subtitles, or when a tool reports missing login.",
+  "When the user asks to set up Hermes, or a Hermes-route generation fails with 'Hermes Agent was not found' or 'not logged in to xAI Grok OAuth', call setup_hermes_grok — it runs the browser OAuth (hermes auth add xai-oauth) so the user just approves in X.",
   "Lovart models (require LOVART_ACCESS_KEY/LOVART_SECRET_KEY or ~/.lovart/credentials.json; billed in Lovart credits): images lovart-midjourney, lovart-flux-2-max, lovart-nano-banana-pro, lovart-ideogram-v4, lovart-agent (Lovart picks the model); videos lovart-veo-3-1, lovart-veo-3-1-fast, lovart-hailuo-2-3, lovart-kling-3-omni, lovart-wan-2-6. Lovart is prompt-driven: aspect ratio and duration are hints, not hard parameters.",
   "Use generate_excalidraw_subtitles to create Japanese SRT subtitles from an audio file (scripted mode aligns a provided script, scriptless mode transcribes) and place an SRT card on the canvas.",
   "Use silence_cut_excalidraw_video to remove silences from a local video with ffmpeg (jet-cut) and insert the cut video into the canvas with cut statistics.",
@@ -1378,6 +1380,23 @@ function toolDefinitions() {
       },
     },
     {
+      name: TOOL_SETUP_HERMES,
+      title: "Setup Hermes Grok",
+      description:
+        "Set up the Hermes route for Grok Imagine: checks the Hermes Agent CLI and, when not logged in, runs `hermes auth add xai-oauth` which opens the browser so the user can complete the X (xAI) OAuth. Call this when the user asks to set up Hermes or a Hermes generation fails with 'Hermes Agent was not found' / 'not logged in'. Blocks up to 10 minutes while the user signs in.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    {
       name: TOOL_BUZZASSIST_AUTH_STATUS,
       title: "BuzzAssist Auth Status",
       description: "Return the current BuzzAssist media auth status (logged in, user id, expiry).",
@@ -1689,6 +1708,31 @@ async function handleToolCall(id, params) {
     const result = await handleBuzzAssistLogin(params.arguments ?? {});
     sendResult(id, {
       content: [{ type: "text", text: result.message }],
+      structuredContent: result,
+    });
+    return;
+  }
+
+  if (params?.name === TOOL_SETUP_HERMES) {
+    const before = await getHermesStatus();
+    if (before.installed && before.session === "logged-in") {
+      sendResult(id, {
+        content: [{ type: "text", text: "Hermes is installed and already logged in to xAI Grok OAuth. The Hermes route is ready." }],
+        structuredContent: { ...before, action: "already-logged-in" },
+      });
+      return;
+    }
+    const result = await setupHermesGrok();
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text:
+            result.action === "already-logged-in"
+              ? "Hermes was already logged in. The Hermes route is ready."
+              : "Hermes xAI OAuth completed — the browser sign-in succeeded and the Hermes route is ready for Grok Imagine.",
+        },
+      ],
       structuredContent: result,
     });
     return;
