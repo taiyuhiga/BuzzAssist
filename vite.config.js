@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { createReadStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -1472,6 +1472,36 @@ function canvasStoragePlugin() {
             res.statusCode = 405
             res.setHeader('allow', 'POST')
             res.end()
+            return
+          }
+
+          // Streaming raw-body upload (x-upload-filename header): pipe the
+          // request straight to disk with constant memory and no size cap —
+          // this is how large/long media (podcast videos, long audio) attach
+          // without buffering the whole file in RAM.
+          const streamFilenameHeader = req.headers['x-upload-filename']
+          if (streamFilenameHeader) {
+            const requestedName = basename(decodeURIComponent(String(streamFilenameHeader)))
+            const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-') || `asset-${Date.now()}`
+            const destinationPath = resolve(canvasAssetsDir, safeName)
+            if (!isSafeChildPath(canvasAssetsDir, destinationPath)) {
+              sendJson(res, 403, { error: 'Unsafe destination path.' })
+              return
+            }
+            await mkdir(canvasAssetsDir, { recursive: true })
+            await new Promise((resolveWrite, rejectWrite) => {
+              const out = createWriteStream(destinationPath)
+              req.on('error', rejectWrite)
+              out.on('error', rejectWrite)
+              out.on('finish', resolveWrite)
+              req.pipe(out)
+            })
+            sendJson(res, 200, {
+              ok: true,
+              path: destinationPath,
+              url: `${canvasAssetsRoute}${encodeURIComponent(safeName)}`,
+              mimeType: req.headers['content-type'] || mimeTypes.get(extname(safeName).toLowerCase()) || 'application/octet-stream'
+            })
             return
           }
 

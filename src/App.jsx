@@ -3973,20 +3973,29 @@ export default function App() {
     [scheduleFrameFormWrite]
   )
 
-  const uploadAssetFile = useCallback(async (file, options = {}) => {
-    const isXmlFile = /\.xml$/i.test(file.name || '') || /^(application|text)\/xml$/i.test(file.type || '')
-    if (isXmlFile) {
-      const formData = new FormData()
-      formData.append('file', file, file.name)
-      formData.append('fileName', file.name)
+    // Stream the file straight to disk with constant memory and no size cap —
+    // large/long media (podcast videos, long audio) attach without buffering
+    // the whole file in RAM or base64-encoding it.
+    const streamUpload = async (uploadFile) => {
       const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
         method: 'POST',
-        body: formData
+        headers: {
+          'x-upload-filename': encodeURIComponent(uploadFile.name || `asset-${Date.now()}`),
+          'content-type': uploadFile.type || 'application/octet-stream'
+        },
+        body: uploadFile
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok || payload.error) {
         throw new Error(payload.error || `Upload failed: ${response.status}`)
       }
+      return payload
+    }
+
+  const uploadAssetFile = useCallback(async (file, options = {}) => {
+    const isXmlFile = /\.xml$/i.test(file.name || '') || /^(application|text)\/xml$/i.test(file.type || '')
+    if (isXmlFile) {
+      const payload = await streamUpload(file)
       return {
         id: crypto.randomUUID(),
         name: file.name,
@@ -4001,19 +4010,9 @@ export default function App() {
     }
 
     if (file.type.startsWith('audio/')) {
-      const metadata = await readAudioMetadata(file)
-      const formData = new FormData()
-      formData.append('file', file, file.name)
-      formData.append('fileName', file.name)
-      const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
-        method: 'POST',
-        body: formData
-      })
-      const payload = await response.json().catch(() => ({}))
+      // Probe duration and stream the bytes concurrently so long audio attaches fast.
+      const [metadata, payload] = await Promise.all([readAudioMetadata(file), streamUpload(file)])
       if (metadata.objectURL && typeof URL !== 'undefined') URL.revokeObjectURL(metadata.objectURL)
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error || `Upload failed: ${response.status}`)
-      }
       return {
         id: crypto.randomUUID(),
         name: file.name,
@@ -4028,19 +4027,12 @@ export default function App() {
     }
 
     if (file.type.startsWith('video/')) {
-      const poster = options.poster && typeof options.poster === 'object' ? options.poster : await readVideoPoster(file)
-      const formData = new FormData()
-      formData.append('file', file, file.name)
-      formData.append('fileName', file.name)
-      const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
-        method: 'POST',
-        body: formData
-      })
-      const payload = await response.json().catch(() => ({}))
+      // Poster extraction and the byte upload run in parallel.
+      const posterPromise = options.poster && typeof options.poster === 'object'
+        ? Promise.resolve(options.poster)
+        : readVideoPoster(file)
+      const [poster, payload] = await Promise.all([posterPromise, streamUpload(file)])
       if (!options.poster && poster.objectURL && typeof URL !== 'undefined') URL.revokeObjectURL(poster.objectURL)
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error || `Upload failed: ${response.status}`)
-      }
       return {
         id: crypto.randomUUID(),
         name: file.name,
