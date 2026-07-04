@@ -907,13 +907,14 @@ function normalizeScene(scene) {
     return DEFAULT_SCENE
   }
 
+  const files = normalizeExcalidrawFiles(scene.files)
   return {
     type: scene.type ?? 'excalidraw',
     version: scene.version ?? 2,
     source: scene.source ?? 'codex-excalidraw-canvas',
-    elements: scene.elements,
+    elements: restoreAssetBackedImageStatuses(scene.elements, files),
     appState: scene.appState && typeof scene.appState === 'object' ? scene.appState : {},
-    files: normalizeExcalidrawFiles(scene.files)
+    files
   }
 }
 
@@ -951,10 +952,51 @@ function normalizeExcalidrawFiles(files) {
 // dataURL instead of inline base64 so the scene JSON stays small. They are
 // hydrated back to base64 client-side before being handed to Excalidraw.
 function isAssetBackedFileRecord(file) {
-  return typeof file?.dataURL === 'string' && file.dataURL.startsWith(CANVAS_ASSETS_ROUTE)
+  return (
+    (typeof file?.dataURL === 'string' && file.dataURL.startsWith(CANVAS_ASSETS_ROUTE)) ||
+    (file?.codexAssetBacked === true &&
+      typeof file?.codexAssetUrl === 'string' &&
+      file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE))
+  )
+}
+
+function assetBackedFileIds(files) {
+  return new Set(
+    Object.entries(files ?? {})
+      .filter(([, file]) => isAssetBackedFileRecord(file))
+      .map(([id]) => id)
+  )
+}
+
+function restoreAssetBackedImageStatuses(elements, files) {
+  const fileIds = files instanceof Set ? files : assetBackedFileIds(files)
+  if (!Array.isArray(elements) || fileIds.size === 0) return elements
+  let changed = false
+  const next = elements.map((element) => {
+    if (
+      element?.type !== 'image' ||
+      element.status !== 'error' ||
+      !fileIds.has(element.fileId) ||
+      element.customData?.codexMediaKind === 'video'
+    ) {
+      return element
+    }
+    changed = true
+    return { ...element, status: 'saved' }
+  })
+  return changed ? next : elements
 }
 
 const assetDataURLCache = new Map()
+
+function readBlobAsDataURL(blob, url) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error(`Failed to read asset ${url}`))
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.readAsDataURL(blob)
+  })
+}
 
 function fetchAssetDataURL(url) {
   let pending = assetDataURLCache.get(url)
@@ -963,12 +1005,7 @@ function fetchAssetDataURL(url) {
     const response = await fetch(url)
     if (!response.ok) throw new Error(`Failed to load asset ${url}: ${response.status}`)
     const blob = await response.blob()
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onerror = () => reject(reader.error || new Error(`Failed to read asset ${url}`))
-      reader.onload = () => resolve(String(reader.result || ''))
-      reader.readAsDataURL(blob)
-    })
+    return readBlobAsDataURL(blob, url)
   })()
   pending.catch(() => {
     if (assetDataURLCache.get(url) === pending) assetDataURLCache.delete(url)
@@ -980,15 +1017,22 @@ function fetchAssetDataURL(url) {
 // Fetch asset-backed file records (concurrency-limited) and hand each hydrated
 // record to `onHydrated` as it resolves, so the scene renders immediately and
 // images pop in as their assets load.
-async function hydrateAssetBackedFiles(files, onHydrated) {
-  const pending = Object.values(files ?? {}).filter(isAssetBackedFileRecord)
+async function hydrateAssetBackedFiles(files, onHydrated, options = {}) {
+  const onlyFileIds = options.onlyFileIds instanceof Set ? options.onlyFileIds : null
+  const pending = Object.values(files ?? {}).filter((file) => {
+    if (!isAssetBackedFileRecord(file)) return false
+    return !onlyFileIds || onlyFileIds.has(file.id)
+  })
   if (pending.length === 0) return
   let cursor = 0
   const worker = async () => {
     while (cursor < pending.length) {
       const file = pending[cursor]
       cursor += 1
-      const url = file.dataURL
+      const url =
+        typeof file.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)
+          ? file.codexAssetUrl
+          : file.dataURL
       try {
         const dataURL = await fetchAssetDataURL(url)
         onHydrated({ ...file, dataURL, codexAssetBacked: true, codexAssetUrl: url })
@@ -998,6 +1042,42 @@ async function hydrateAssetBackedFiles(files, onHydrated) {
     }
   }
   await Promise.all(Array.from({ length: Math.min(ASSET_HYDRATION_CONCURRENCY, pending.length) }, worker))
+}
+
+function visibleAssetBackedImageFileIds(scene, padding = 900) {
+  const files = scene?.files ?? {}
+  const appState = scene?.appState ?? {}
+  const { width, height } = viewportSize(appState)
+  const visible = new Set()
+  for (const element of scene?.elements ?? []) {
+    if (
+      element?.type !== 'image' ||
+      element.isDeleted ||
+      element.customData?.codexMediaKind === 'video' ||
+      !isAssetBackedFileRecord(files[element.fileId])
+    ) {
+      continue
+    }
+    const placement = getFrameViewportPlacement(element, appState)
+    if (
+      placement.left <= width + padding &&
+      placement.left + placement.width >= -padding &&
+      placement.top <= height + padding &&
+      placement.top + placement.height >= -padding
+    ) {
+      visible.add(element.fileId)
+    }
+  }
+  return visible
+}
+
+async function hydrateSceneAssetBackedFiles(scene, options = {}) {
+  const files = { ...(scene.files ?? {}) }
+  const onlyFileIds = options.onlyVisible === true ? visibleAssetBackedImageFileIds(scene) : options.onlyFileIds
+  await hydrateAssetBackedFiles(files, (file) => {
+    files[file.id] = file
+  }, { onlyFileIds })
+  return { ...scene, files }
 }
 
 // Inverse of hydration for the save path: swap hydrated base64 back to the
@@ -1028,16 +1108,16 @@ function stripAssetBackedFilesForSave(elements, files) {
   const next = {}
   for (const [id, file] of Object.entries(files)) {
     const inline = typeof file?.dataURL === 'string' && file.dataURL.startsWith('data:')
-    if (!inline || videoFileIds.has(id)) {
-      next[id] = file
-      continue
-    }
     const markedUrl =
-      file.codexAssetBacked === true &&
+      file?.codexAssetBacked === true &&
       typeof file.codexAssetUrl === 'string' &&
       file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)
         ? file.codexAssetUrl
         : null
+    if ((!inline && !markedUrl) || videoFileIds.has(id)) {
+      next[id] = file
+      continue
+    }
     const assetUrl = markedUrl || assetUrlByFileId.get(id) || null
     if (!assetUrl) {
       next[id] = file
@@ -1073,13 +1153,14 @@ function serializableAppState(appState = {}) {
 }
 
 function createScene(elements, appState, files) {
+  const normalizedFiles = normalizeExcalidrawFiles(files)
   return {
     type: 'excalidraw',
     version: 2,
     source: 'codex-excalidraw-canvas',
-    elements: elements.map(sanitizeElementForScene),
+    elements: restoreAssetBackedImageStatuses(elements, normalizedFiles).map(sanitizeElementForScene),
     appState: serializableAppState(appState),
-    files: normalizeExcalidrawFiles(files)
+    files: normalizedFiles
   }
 }
 
@@ -2682,9 +2763,10 @@ export default function App() {
         if (!response.ok) throw new Error(`Failed to load canvas: ${response.status}`)
         const payload = await response.json()
         const scene = normalizeScene(payload.scene)
-        latestSceneRef.current = scene
-        previousGeneratorFrameIdsRef.current = new Set(scene.elements.filter(isGeneratorFrame).map((element) => element.id))
-        setInitialScene(scene)
+        const hydratedScene = await hydrateSceneAssetBackedFiles(scene, { onlyVisible: true })
+        latestSceneRef.current = hydratedScene
+        previousGeneratorFrameIdsRef.current = new Set(hydratedScene.elements.filter(isGeneratorFrame).map((element) => element.id))
+        setInitialScene(hydratedScene)
       } catch (error) {
         if (error.name === 'AbortError') return
         setLoadError(error)
@@ -2973,12 +3055,56 @@ export default function App() {
     if (initialScene) syncGeneratorUi(initialScene)
   }, [initialScene, syncGeneratorUi])
 
+  const addHydratedAssetFile = useCallback((file) => {
+    if (!api || !file?.id) return
+    api.addFiles([file])
+
+    const currentElements = api.getSceneElementsIncludingDeleted?.() ?? latestSceneRef.current.elements
+    let touchedImage = false
+    let restoredStatus = false
+    const now = Date.now()
+    const restoredElements = currentElements.map((element) => {
+      if (
+        element?.type !== 'image' ||
+        element.fileId !== file.id ||
+        element.customData?.codexMediaKind === 'video'
+      ) {
+        return element
+      }
+      touchedImage = true
+      if (element.status === 'error') restoredStatus = true
+      return {
+        ...element,
+        status: 'saved',
+        version: (Number(element.version) || 1) + 1,
+        versionNonce: Math.floor(Math.random() * 2 ** 31),
+        updated: now
+      }
+    })
+    if (!touchedImage) return
+
+    const currentAppState = api.getAppState?.() ?? latestSceneRef.current.appState
+    const currentFiles = {
+      ...(api.getFiles?.() ?? latestSceneRef.current.files ?? {}),
+      [file.id]: file
+    }
+    const nextScene = createScene(restoredElements, currentAppState, currentFiles)
+    latestSceneRef.current = nextScene
+    suppressNextChangeRef.current = true
+    api.updateScene({
+      elements: restoredElements,
+      captureUpdate: CaptureUpdateAction.NEVER
+    })
+    refreshOverlayStates(nextScene)
+    if (restoredStatus) scheduleCanvasSave(nextScene)
+  }, [api, refreshOverlayStates, scheduleCanvasSave])
+
   // Hydrate disk-backed file records once the Excalidraw API is ready. The
   // scene renders immediately; images pop in as each asset finishes loading.
   useEffect(() => {
     if (!api || !initialScene) return
-    hydrateAssetBackedFiles(initialScene.files, (file) => api.addFiles([file]))
-  }, [api, initialScene])
+    hydrateAssetBackedFiles(initialScene.files, addHydratedAssetFile)
+  }, [api, initialScene, addHydratedAssetFile])
 
   const handleChange = useCallback(
     (elements, appState, files) => {
@@ -3193,7 +3319,7 @@ export default function App() {
         if (readyFiles.length > 0) api.addFiles(readyFiles)
         // Disk-backed records hydrate asynchronously after the scene applies;
         // images pop in as each asset resolves instead of blocking the update.
-        hydrateAssetBackedFiles(normalized.files, (file) => api.addFiles([file]))
+        hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile)
         window.setTimeout(() => {
           api.updateScene({
             elements: normalized.elements,
@@ -3207,7 +3333,7 @@ export default function App() {
         }, 3000)
       }
     },
-    [api]
+    [api, addHydratedAssetFile, syncGeneratorUi]
   )
 
   const openToolbarMediaPicker = useCallback(() => {

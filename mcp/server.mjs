@@ -410,14 +410,48 @@ function normalizeScene(value) {
     };
   }
 
+  const files = value.files && typeof value.files === "object" ? value.files : {};
   return {
     type: value.type ?? "excalidraw",
     version: value.version ?? 2,
     source: value.source ?? "codex-excalidraw-canvas",
-    elements: value.elements,
+    elements: restoreAssetBackedImageStatuses(value.elements, files),
     appState: value.appState && typeof value.appState === "object" ? value.appState : {},
-    files: value.files && typeof value.files === "object" ? value.files : {},
+    files,
   };
+}
+
+function isAssetBackedFileRecord(file) {
+  return (
+    (typeof file?.dataURL === "string" && file.dataURL.startsWith(ASSETS_ROUTE)) ||
+    (file?.codexAssetBacked === true &&
+      typeof file?.codexAssetUrl === "string" &&
+      file.codexAssetUrl.startsWith(ASSETS_ROUTE))
+  );
+}
+
+function restoreAssetBackedImageStatuses(elements, files) {
+  if (!Array.isArray(elements) || !files || typeof files !== "object") return elements;
+  const fileIds = new Set(
+    Object.entries(files)
+      .filter(([, file]) => isAssetBackedFileRecord(file))
+      .map(([id]) => id),
+  );
+  if (fileIds.size === 0) return elements;
+  let changed = false;
+  const next = elements.map((element) => {
+    if (
+      element?.type !== "image" ||
+      element.status !== "error" ||
+      !fileIds.has(element.fileId) ||
+      element.customData?.codexMediaKind === "video"
+    ) {
+      return element;
+    }
+    changed = true;
+    return { ...element, status: "saved" };
+  });
+  return changed ? next : elements;
 }
 
 async function loadScene(args = {}) {
