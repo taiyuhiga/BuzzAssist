@@ -7217,11 +7217,7 @@ export default function App() {
                             <div className="lovart-threshold-auto-hint">動画のノイズに合わせて自動で調整します。</div>
                           ) : (
                             <>
-                              <div className="lovart-setting-row lovart-threshold-manual-row">
-                                <span className="lovart-threshold-manual-label">静か</span>
-                                <span className="lovart-threshold-manual-value">{Math.round(frameForm.silenceCutThresholdDb)}dB</span>
-                                <span className="lovart-threshold-manual-label">大きい</span>
-                              </div>
+                              <div className="lovart-threshold-value-line">{Math.round(frameForm.silenceCutThresholdDb)}dB</div>
                               <input
                                 type="range"
                                 min="-60"

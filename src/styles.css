@@ -2155,19 +2155,14 @@ body {
     sans-serif;
 }
 
-.lovart-threshold-manual-row {
+/* dB value right-aligned, sitting just under the 自動/手動 toggle */
+.lovart-threshold-value-line {
   margin-top: 6px;
-}
-
-.lovart-threshold-manual-label {
-  color: #9aa0a6;
-  font-size: 11px;
-}
-
-.lovart-threshold-manual-value {
-  color: #666666;
-  font-size: 13px;
+  color: #5a6270;
+  font-size: 12px;
   font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .lovart-menu-section {
