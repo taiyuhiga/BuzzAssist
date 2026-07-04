@@ -99,13 +99,15 @@ const DEFAULT_FRAME_FORM = {
   videoReferenceAudios: [],
   videoGenerateAudio: true,
   videoMode: 'pro',
-  subtitleMode: 'scriptless',
+  subtitleMode: 'scripted',
+  subtitlePrompt: '',
   subtitleLineCount: 2,
   subtitleMaxChars: 30,
   subtitleHoldSeconds: 0,
   subtitlePunctuationMode: 'auto',
   subtitleFillerMode: 'keep',
   subtitleScriptText: '',
+  subtitleScriptName: '',
   subtitleGlossary: '',
   subtitleAudio: null,
   silenceCutModel: 'ffmpeg-local',
@@ -134,7 +136,7 @@ const SUBTITLE_MODE_OPTIONS = [
 ]
 
 const SUBTITLE_PUNCTUATION_OPTIONS = [
-  ['auto', '自動'],
+  ['auto', '付ける'],
   ['none', 'なし']
 ]
 
@@ -835,6 +837,20 @@ function AudioWaveIcon({ size = 18 }) {
       <rect x="12" y="8" width="2" height="8" rx="1" fill="currentColor" />
       <rect x="16" y="3" width="2" height="18" rx="1" fill="currentColor" />
       <rect x="20" y="7" width="2" height="10" rx="1" fill="currentColor" />
+    </svg>
+  )
+}
+
+// Tabler Icons "file-text" (MIT) — same universal manuscript icon the desktop
+// app uses for any attached 台本 file (.md and .txt alike).
+function ScriptFileIcon({ size = 24, color = '#333' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+      <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />
+      <path d="M9 9h1" />
+      <path d="M9 13h6" />
+      <path d="M9 17h6" />
     </svg>
   )
 }
@@ -1734,7 +1750,9 @@ function frameFormFromElement(element) {
     subtitleFillerMode: ['keep', 'safe', 'contextual'].includes(customData.subtitleFillerMode)
       ? customData.subtitleFillerMode
       : DEFAULT_FRAME_FORM.subtitleFillerMode,
+    subtitlePrompt: typeof customData.subtitlePrompt === 'string' ? customData.subtitlePrompt : '',
     subtitleScriptText: typeof customData.subtitleScriptText === 'string' ? customData.subtitleScriptText : '',
+    subtitleScriptName: typeof customData.subtitleScriptName === 'string' ? customData.subtitleScriptName : '',
     subtitleGlossary: typeof customData.subtitleGlossary === 'string' ? customData.subtitleGlossary : '',
     subtitleAudio: customData.subtitleAudioAsset && typeof customData.subtitleAudioAsset === 'object'
       ? customData.subtitleAudioAsset
@@ -1766,12 +1784,14 @@ function frameCustomDataFromForm(kind, form) {
   if (kind === 'subtitle') {
     return {
       subtitleMode: form.subtitleMode,
+      subtitlePrompt: form.subtitlePrompt,
       subtitleLineCount: form.subtitleLineCount,
       subtitleMaxChars: form.subtitleMaxChars,
       subtitleHoldSeconds: form.subtitleHoldSeconds,
       subtitlePunctuationMode: form.subtitlePunctuationMode,
       subtitleFillerMode: form.subtitleFillerMode,
       subtitleScriptText: form.subtitleScriptText,
+      subtitleScriptName: form.subtitleScriptName,
       subtitleGlossary: form.subtitleGlossary,
       subtitleAudioAsset: form.subtitleAudio || null
     }
@@ -2516,6 +2536,9 @@ export default function App() {
   const [initialScene, setInitialScene] = useState(null)
   const [loadError, setLoadError] = useState(null)
   const [api, setApi] = useState(null)
+  useEffect(() => {
+    if (import.meta.env.DEV) window.__excalidrawApi = api
+  }, [api])
   const [activeFrameId, setActiveFrameId] = useState('')
   const [activeFrameKind, setActiveFrameKind] = useState('image')
   const [frameForm, setFrameForm] = useState(DEFAULT_FRAME_FORM)
@@ -2533,22 +2556,31 @@ export default function App() {
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
   const [glossaryTerms, setGlossaryTerms] = useState(null)
-  const glossarySaveTimerRef = useRef(null)
-  const persistGlossaryTerms = (terms) => {
+  const [glossarySaving, setGlossarySaving] = useState(false)
+  const [glossaryStatus, setGlossaryStatus] = useState('')
+  const mutateGlossaryTerms = (terms) => {
     setGlossaryTerms(terms)
-    window.clearTimeout(glossarySaveTimerRef.current)
-    glossarySaveTimerRef.current = window.setTimeout(() => {
-      fetch('/api/subtitle-glossary', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ terms })
-      }).catch(() => {})
-    }, 600)
+    setGlossaryStatus('')
   }
   const updateGlossaryTerm = (id, key, value) =>
-    persistGlossaryTerms((glossaryTerms ?? []).map((term) => (term.id === id ? { ...term, [key]: value } : term)))
-  const removeGlossaryTerm = (id) => persistGlossaryTerms((glossaryTerms ?? []).filter((term) => term.id !== id))
-  const addGlossaryTerm = () => persistGlossaryTerms([...(glossaryTerms ?? []), { id: crypto.randomUUID(), from: '', to: '' }])
+    mutateGlossaryTerms((glossaryTerms ?? []).map((term) => (term.id === id ? { ...term, [key]: value } : term)))
+  const removeGlossaryTerm = (id) => mutateGlossaryTerms((glossaryTerms ?? []).filter((term) => term.id !== id))
+  const addGlossaryTerm = () => mutateGlossaryTerms([...(glossaryTerms ?? []), { id: crypto.randomUUID(), from: '', to: '' }])
+  const saveGlossaryTerms = async () => {
+    setGlossarySaving(true)
+    try {
+      const response = await fetch('/api/subtitle-glossary', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ terms: glossaryTerms ?? [] })
+      })
+      setGlossaryStatus(response.ok ? '保存しました' : '保存に失敗しました')
+    } catch {
+      setGlossaryStatus('保存に失敗しました')
+    } finally {
+      setGlossarySaving(false)
+    }
+  }
   const glossaryActiveCount = (glossaryTerms ?? []).filter((term) => term.from?.trim()).length
   const lovartAccessKeyInputRef = useRef(null)
   const lovartSecretKeyInputRef = useRef(null)
@@ -2560,6 +2592,7 @@ export default function App() {
   const [selectedGeneratedResult, setSelectedGeneratedResult] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)
   const [videoFrameBtnsHovered, setVideoFrameBtnsHovered] = useState(false)
+  const [utilityTrayHovered, setUtilityTrayHovered] = useState(false)
   const [generationError, setGenerationError] = useState('')
   const [generatingFrameIds, setGeneratingFrameIds] = useState(() => new Set())
   const [capabilities, setCapabilities] = useState(null)
@@ -3904,7 +3937,7 @@ export default function App() {
       const asset = assetReferenceFromElement(selected, scene.files)
       if (!asset) return false
       if (['videoStartFrame', 'videoEndFrame', 'videoReferenceImages'].includes(picker.target) && asset.kind !== 'image') return false
-      if (picker.target === 'imageReferences' && asset.kind !== 'image' && asset.kind !== 'video') return false
+      if (picker.target === 'imageReferences' && asset.kind !== 'image') return false
       if (picker.target === 'videoReferenceVideos' && asset.kind !== 'video') return false
       if (picker.target === 'videoReferenceAudios' && asset.kind !== 'audio') return false
       const restoreFrameId = picker.frameId || canvasPickerFrameIdRef.current || ''
@@ -3947,7 +3980,7 @@ export default function App() {
     try {
       const assets = await Promise.all(
         files
-          .filter((file) => file.type.startsWith('image/') || file.type.startsWith('video/'))
+          .filter((file) => file.type.startsWith('image/'))
           .map(uploadAssetFile)
       )
       let nextForm = null
@@ -4699,11 +4732,11 @@ export default function App() {
     const savedForm = { ...frameForm }
     if (kind === 'subtitle') {
       if (!savedForm.subtitleAudio?.path) {
-        setGenerationError('音声ファイルを添付してください。')
+        setGenerationError('音声を添付してください。')
         return
       }
       if (savedForm.subtitleMode === 'scripted' && !savedForm.subtitleScriptText.trim()) {
-        setGenerationError('台本ありモードでは台本テキストを入力してください。')
+        setGenerationError('台本ファイルを添付してください。')
         return
       }
     } else if (!savedForm.silenceCutVideo?.path) {
@@ -4738,6 +4771,7 @@ export default function App() {
           ? {
               audioPath: savedForm.subtitleAudio.path,
               scriptText: savedForm.subtitleMode === 'scripted' ? savedForm.subtitleScriptText : '',
+              instructionPrompt: savedForm.subtitlePrompt.trim() || undefined,
               mode: savedForm.subtitleMode,
               lineCount: savedForm.subtitleLineCount,
               maxCharsPerLine: savedForm.subtitleMaxChars,
@@ -4753,7 +4787,7 @@ export default function App() {
           : {
               videoPath: savedForm.silenceCutVideo.path,
               model: savedForm.silenceCutModel,
-              instructionPrompt: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutInstruction : undefined,
+              instructionPrompt: savedForm.silenceCutInstruction.trim() || undefined,
               fillerRemoval: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutFillerRemoval : 0,
               coughRemoval: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutCoughRemoval : 0,
               retakeRemoval: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutRetakeRemoval : 0,
@@ -5337,48 +5371,80 @@ export default function App() {
         )
       })}
       {(() => {
-        const downloadable = selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl)
-        if (downloadable.length < 2) return null
+        // Lovart-style selection toolbar: click or marquee-select any media
+        // (image / video / SRT card) and a floating toolbar appears above the
+        // selection bounds with a download button — single item downloads
+        // directly, multiple items download as one ZIP.
+        const selectedMedia = [
+          ...selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl),
+          ...subtitlePreviewOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl)
+        ]
+        if (selectedMedia.length === 0) return null
+        const boundsLeft = Math.min(...selectedMedia.map((overlay) => overlay.left))
+        const boundsRight = Math.max(...selectedMedia.map((overlay) => overlay.left + overlay.width))
+        const boundsTop = Math.min(...selectedMedia.map((overlay) => overlay.top))
+        const single = selectedMedia.length === 1
+        const downloadZip = async () => {
+          const files = selectedMedia
+            .map((overlay) => overlay.assetUrl.split('/').pop().split('?')[0])
+            .filter(Boolean)
+          if (files.length === 0) return
+          setBulkDownloading(true)
+          try {
+            const response = await fetch('/api/assets/archive', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ files })
+            })
+            if (!response.ok) {
+              const payload = await response.json().catch(() => ({}))
+              throw new Error(payload.error || `Download failed: ${response.status}`)
+            }
+            const blob = await response.blob()
+            const url = URL.createObjectURL(blob)
+            const anchor = document.createElement('a')
+            anchor.href = url
+            anchor.download = `excalidraw-assets-${new Date().toISOString().slice(0, 10)}.zip`
+            document.body.appendChild(anchor)
+            anchor.click()
+            anchor.remove()
+            window.setTimeout(() => URL.revokeObjectURL(url), 10000)
+          } catch (error) {
+            setGenerationError(error.message)
+          } finally {
+            setBulkDownloading(false)
+          }
+        }
         return (
-          <button
-            type="button"
-            className="lovart-download-chip"
-            disabled={bulkDownloading}
-            onClick={async () => {
-              const files = downloadable
-                .map((overlay) => overlay.assetUrl.split('/').pop().split('?')[0])
-                .filter(Boolean)
-              if (files.length === 0) return
-              setBulkDownloading(true)
-              try {
-                const response = await fetch('/api/assets/archive', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ files })
-                })
-                if (!response.ok) {
-                  const payload = await response.json().catch(() => ({}))
-                  throw new Error(payload.error || `Download failed: ${response.status}`)
-                }
-                const blob = await response.blob()
-                const url = URL.createObjectURL(blob)
-                const anchor = document.createElement('a')
-                anchor.href = url
-                anchor.download = `excalidraw-assets-${new Date().toISOString().slice(0, 10)}.zip`
-                document.body.appendChild(anchor)
-                anchor.click()
-                anchor.remove()
-                window.setTimeout(() => URL.revokeObjectURL(url), 10000)
-              } catch (error) {
-                setGenerationError(error.message)
-              } finally {
-                setBulkDownloading(false)
-              }
-            }}
+          <div
+            className="lovart-selection-toolbar"
+            style={{ left: `${Math.round((boundsLeft + boundsRight) / 2)}px`, top: `${Math.max(12, Math.round(boundsTop - 48))}px` }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
           >
-            <DownloadIcon />
-            <span>{bulkDownloading ? '準備中…' : `${downloadable.length}件をZIPでダウンロード`}</span>
-          </button>
+            {single ? (
+              <a
+                className="lovart-selection-toolbar-btn"
+                href={`${selectedMedia[0].assetUrl}?download=1`}
+                download
+                title="ダウンロード"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <DownloadIcon size={15} />
+              </a>
+            ) : (
+              <button
+                type="button"
+                className="lovart-selection-toolbar-btn"
+                disabled={bulkDownloading}
+                title={bulkDownloading ? '準備中…' : `${selectedMedia.length}件をZIPでダウンロード`}
+                onClick={downloadZip}
+              >
+                <DownloadIcon size={15} />
+                <span className="lovart-selection-toolbar-count">{bulkDownloading ? '…' : selectedMedia.length}</span>
+              </button>
+            )}
+          </div>
         )
       })()}
       <div ref={hoverOverlayRef} className="lovart-hover-border" style={{ display: 'none' }} />
@@ -5892,7 +5958,7 @@ export default function App() {
                         }}
                       >
                         <UploadIcon />
-                        <span>画像・動画をアップロード</span>
+                        <span>画像をアップロード</span>
                       </button>
                       <button
                         type="button"
@@ -6162,11 +6228,68 @@ export default function App() {
         </section>
       ) : null}
 
-      {showPromptPanel && activeFrameKind === 'subtitle' ? (
+      {showPromptPanel && (activeFrameKind === 'subtitle' || activeFrameKind === 'silenceCut') ? (() => {
+        const isSilencePanel = activeFrameKind === 'silenceCut'
+        const primaryAsset = isSilencePanel ? frameForm.silenceCutVideo : frameForm.subtitleAudio
+        const hasScriptFile = Boolean(frameForm.subtitleScriptText.trim())
+        const scriptSlotDisabled = frameForm.subtitleMode !== 'scripted'
+        const trayOpen =
+          utilityTrayHovered ||
+          Boolean(primaryAsset) ||
+          (!isSilencePanel && frameForm.subtitleMode === 'scripted' && hasScriptFile)
+        const primaryTarget = isSilencePanel ? 'silenceCutVideo' : 'subtitleAudio'
+        const openPrimaryPicker = () => {
+          setOpenMenu(null)
+          rememberGeneratorUploadFrame()
+          videoFrameUploadTargetRef.current = primaryTarget
+          if (videoFrameUploadInputRef.current) {
+            videoFrameUploadInputRef.current.accept = getUploadTargetAccept(primaryTarget)
+            videoFrameUploadInputRef.current.multiple = false
+            videoFrameUploadInputRef.current.click()
+          }
+        }
+        const openScriptPicker = () => {
+          if (scriptSlotDisabled) return
+          setOpenMenu(null)
+          const input = document.createElement('input')
+          input.type = 'file'
+          input.accept = '.txt,.md,.markdown,text/plain,text/markdown'
+          input.onchange = () => {
+            const file = input.files?.[0]
+            if (!file) return
+            file.text().then((text) =>
+              patchFrameForm({ subtitleScriptText: text.trim(), subtitleScriptName: file.name })
+            )
+          }
+          input.click()
+        }
+        const canGenerate = isSilencePanel
+          ? Boolean(frameForm.silenceCutVideo)
+          : Boolean(frameForm.subtitleAudio) && (frameForm.subtitleMode !== 'scripted' || hasScriptFile)
+        const renderSilenceStepper = (label, field, min, max, step) => {
+          const value = Number(frameForm[field])
+          const canDecrease = value > min + 1e-9
+          const canIncrease = value < max - 1e-9
+          const adjust = (direction) => {
+            const next = Math.min(max, Math.max(min, Number((value + direction * step).toFixed(2))))
+            updateFrameForm(field, next)
+          }
+          return (
+            <div className="lovart-setting-row lovart-stepper-row">
+              <div className="lovart-menu-header">{label}</div>
+              <div className="lovart-stepper">
+                <button type="button" disabled={!canDecrease} onClick={() => adjust(-1)}>−</button>
+                <span>{formatSilenceCutSecondsLabel(value)}</span>
+                <button type="button" disabled={!canIncrease} onClick={() => adjust(1)}>＋</button>
+              </div>
+            </div>
+          )
+        }
+        return (
         <section
           className={`lovart-ai-panel lovart-utility-panel${openMenuBlocksPrompt ? ' has-open-menu' : ''}`}
           style={panelStyle}
-          aria-label="SRT Generator"
+          aria-label={isSilencePanel ? 'Silence Cut Generator' : 'SRT Generator'}
           onPointerDown={(event) => {
             event.stopPropagation()
             if (event.target instanceof Element && !event.target.closest('.lovart-menu-wrap')) setOpenMenu(null)
@@ -6174,185 +6297,280 @@ export default function App() {
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="lovart-prompt-wrap has-video-slots">
-            {frameForm.subtitleMode === 'scripted' ? (
-              <textarea
-                className="lovart-ai-prompt"
-                placeholder="台本テキストを貼り付けてください（音声と同じ内容）"
-                value={frameForm.subtitleScriptText}
-                onChange={(event) => updateFrameForm('subtitleScriptText', event.target.value)}
-                onFocus={() => setOpenMenu(null)}
-              />
-            ) : (
-              <div className="lovart-utility-hint">音声ファイルを添付してSRT字幕を生成します。</div>
-            )}
-            <div className={`lovart-video-frame-tray${frameForm.subtitleAudio ? ' is-open' : ''}`}>
-              <div className="lovart-video-slot start">
-                <button
-                  type="button"
-                  data-lovart-trigger="subtitle-audio"
-                  className={`lovart-add-frame-btn start lovart-audio-slot-btn${frameForm.subtitleAudio ? ' has-asset' : ''}`}
-                  title="音声をアップロード"
-                  onClick={() => {
-                    setOpenMenu(null)
-                    rememberGeneratorUploadFrame()
-                    videoFrameUploadTargetRef.current = 'subtitleAudio'
-                    if (videoFrameUploadInputRef.current) {
-                      videoFrameUploadInputRef.current.accept = getUploadTargetAccept('subtitleAudio')
-                      videoFrameUploadInputRef.current.multiple = false
-                      videoFrameUploadInputRef.current.click()
-                    }
-                  }}
-                >
-                  {frameForm.subtitleAudio ? (
-                    <>
-                      <AudioWaveIcon />
-                      <span className="lovart-audio-slot-duration">{formatAssetDuration(frameForm.subtitleAudio.duration)}</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="lovart-add-plus">+</span>
-                      <span className="lovart-add-label">音声</span>
-                    </>
-                  )}
-                </button>
-                {frameForm.subtitleAudio ? (
-                  <button type="button" className="lovart-frame-del" onClick={() => patchFrameForm({ subtitleAudio: null })}>
-                    <CloseIcon />
+          <div
+            className={`lovart-utility-tray-wrap${trayOpen ? ' is-open' : ''}`}
+            onMouseLeave={() => setUtilityTrayHovered(false)}
+          >
+            <textarea
+              className="lovart-ai-prompt"
+              placeholder="今日は何をしますか？"
+              value={isSilencePanel ? frameForm.silenceCutInstruction : frameForm.subtitlePrompt}
+              onChange={(event) =>
+                updateFrameForm(isSilencePanel ? 'silenceCutInstruction' : 'subtitlePrompt', event.target.value)
+              }
+              onFocus={() => setOpenMenu(null)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  runUtilityGeneration()
+                }
+              }}
+            />
+            <div
+              className="lovart-utility-asset-tray"
+              onMouseEnter={() => setUtilityTrayHovered(true)}
+              onMouseLeave={() => setUtilityTrayHovered(false)}
+            >
+              <div className="lovart-utility-slot primary">
+                {primaryAsset ? (
+                  <div className="lovart-utility-card-wrap">
+                    <button
+                      type="button"
+                      data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
+                      className={`lovart-utility-asset-card${isSilencePanel ? ' video' : ' audio'}`}
+                      title={primaryAsset.name || (isSilencePanel ? '動画を添付' : '音声を添付')}
+                      onClick={openPrimaryPicker}
+                    >
+                      {isSilencePanel ? (
+                        <>
+                          {isRenderableVideoPosterDataURL(primaryAsset.thumbnail) ? (
+                            <img className="lovart-utility-card-thumb" src={primaryAsset.thumbnail} alt={primaryAsset.name || 'video'} />
+                          ) : (
+                            <span className="lovart-utility-card-thumb placeholder" />
+                          )}
+                          <span className="lovart-utility-card-play">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M8 5.14v13.72a1 1 0 001.5.86l11.04-6.86a1 1 0 000-1.72L9.5 4.28a1 1 0 00-1.5.86z" fill="#fff" /></svg>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <AudioWaveIcon size={18} />
+                          <span className="lovart-utility-card-label">音声</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="lovart-frame-del"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        patchFrameForm(isSilencePanel ? { silenceCutVideo: null } : { subtitleAudio: null })
+                      }}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
+                    className="lovart-utility-tilt-card primary"
+                    title={isSilencePanel ? '動画を添付' : '音声を添付'}
+                    onClick={openPrimaryPicker}
+                  >
+                    <span className="lovart-add-plus">+</span>
+                    {trayOpen ? <span className="lovart-utility-card-hint">{isSilencePanel ? '動画' : '音声'}</span> : null}
                   </button>
-                ) : null}
+                )}
               </div>
-              <div className="lovart-video-slot end">
-                <button
-                  type="button"
-                  className={`lovart-add-frame-btn end${frameForm.subtitleScriptText ? ' has-asset' : ''}${frameForm.subtitleMode !== 'scripted' ? ' is-disabled' : ''}`}
-                  disabled={frameForm.subtitleMode !== 'scripted'}
-                  title={frameForm.subtitleMode === 'scripted' ? '台本ファイルをアップロード' : '台本ありモードで使用できます'}
-                  onClick={() => {
-                    if (frameForm.subtitleMode !== 'scripted') return
-                    const input = document.createElement('input')
-                    input.type = 'file'
-                    input.accept = '.txt,.md,text/plain'
-                    input.onchange = () => {
-                      const file = input.files?.[0]
-                      if (!file) return
-                      file.text().then((text) => patchFrameForm({ subtitleScriptText: text.trim() }))
-                    }
-                    input.click()
-                  }}
-                >
-                  <span className="lovart-add-plus">+</span>
-                  <span className="lovart-add-label">台本</span>
-                </button>
-              </div>
-              {frameForm.subtitleAudio?.name ? (
-                <span className="lovart-utility-asset-name">{frameForm.subtitleAudio.name}</span>
+              {!isSilencePanel ? (
+                <div className="lovart-utility-slot script">
+                  {scriptSlotDisabled ? (
+                    <button
+                      type="button"
+                      className="lovart-utility-tilt-card script is-disabled"
+                      disabled
+                      title="台本なしでは台本を使いません"
+                    >
+                      <span className="lovart-add-plus">+</span>
+                      {trayOpen ? <span className="lovart-utility-card-hint">台本</span> : null}
+                    </button>
+                  ) : hasScriptFile ? (
+                    <div className="lovart-utility-card-wrap">
+                      <button
+                        type="button"
+                        className="lovart-utility-asset-card script"
+                        title={frameForm.subtitleScriptName || '台本を添付'}
+                        onClick={openScriptPicker}
+                      >
+                        <ScriptFileIcon size={24} />
+                        <span className="lovart-utility-card-label">台本</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="lovart-frame-del"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          patchFrameForm({ subtitleScriptText: '', subtitleScriptName: '' })
+                        }}
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="lovart-utility-tilt-card script"
+                      title="台本を添付"
+                      onClick={openScriptPicker}
+                    >
+                      <span className="lovart-add-plus">+</span>
+                      {trayOpen ? <span className="lovart-utility-card-hint">台本</span> : null}
+                    </button>
+                  )}
+                </div>
               ) : null}
             </div>
           </div>
           {generationError ? <div className="lovart-error">{generationError}</div> : null}
           <div className="lovart-ai-bottom">
             <div className="lovart-ai-left">
-              <div className="lovart-video-tabs">
-                {SUBTITLE_MODE_OPTIONS.map(([mode, label]) => (
+              {!isSilencePanel ? (
+                <div className="lovart-mode-switch">
+                  {SUBTITLE_MODE_OPTIONS.map(([mode, label]) => (
+                    <button
+                      type="button"
+                      key={mode}
+                      className={frameForm.subtitleMode === mode ? 'is-selected' : ''}
+                      onClick={() => {
+                        setOpenMenu(null)
+                        updateFrameForm('subtitleMode', mode)
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {!isSilencePanel ? (
+                <div className="lovart-menu-wrap">
                   <button
                     type="button"
-                    key={mode}
-                    className={frameForm.subtitleMode === mode ? 'is-selected' : ''}
+                    className={`lovart-pill${openMenu === 'glossary' ? ' tooltip-hidden' : ''}`}
+                    data-lovart-trigger="subtitle-glossary"
                     onClick={() => {
-                      setOpenMenu(null)
-                      updateFrameForm('subtitleMode', mode)
+                      const opening = openMenu !== 'glossary'
+                      setOpenMenu(opening ? 'glossary' : null)
+                      if (opening) {
+                        setGlossaryStatus('')
+                        fetch('/api/subtitle-glossary')
+                          .then((response) => response.json())
+                          .then((payload) => setGlossaryTerms(Array.isArray(payload.terms) ? payload.terms : []))
+                          .catch(() => setGlossaryTerms([]))
+                      }
                     }}
                   >
-                    {label}
+                    <span>{glossaryActiveCount > 0 ? `用語 ${glossaryActiveCount}` : '用語'}</span>
+                    <ChevronIcon />
                   </button>
-                ))}
-              </div>
+                  {openMenu === 'glossary' ? (
+                    <div className="lovart-menu wide lovart-glossary-menu" data-lovart-menu="subtitle-glossary">
+                      <div className="lovart-glossary-head">
+                        <div className="lovart-menu-header">用語辞書</div>
+                        <span className="lovart-glossary-scope">プロジェクト共通</span>
+                      </div>
+                      <div className="lovart-glossary-desc">音声認識の表記ゆれを、SRT生成時に統一します。</div>
+                      <div className="lovart-glossary-rows">
+                        {glossaryTerms === null ? (
+                          <div className="lovart-glossary-empty">読み込み中...</div>
+                        ) : glossaryTerms.length === 0 ? (
+                          <div className="lovart-glossary-empty">まだ用語はありません。</div>
+                        ) : (
+                          glossaryTerms.map((term) => (
+                            <div key={term.id} className="lovart-glossary-row">
+                              <input
+                                value={term.from}
+                                placeholder="変換元"
+                                onChange={(event) => updateGlossaryTerm(term.id, 'from', event.target.value)}
+                              />
+                              <input
+                                value={term.to}
+                                placeholder="表示"
+                                onChange={(event) => updateGlossaryTerm(term.id, 'to', event.target.value)}
+                              />
+                              <button type="button" title="削除" onClick={() => removeGlossaryTerm(term.id)}>×</button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="lovart-glossary-foot">
+                        <button type="button" className="lovart-glossary-add" onClick={addGlossaryTerm}>
+                          + 用語を追加
+                        </button>
+                        <span className={`lovart-glossary-status${glossaryStatus === '保存しました' ? '' : ' is-error'}`}>
+                          {glossaryStatus}
+                        </span>
+                        <button
+                          type="button"
+                          className="lovart-glossary-save"
+                          disabled={glossarySaving || glossaryTerms === null}
+                          onClick={saveGlossaryTerms}
+                        >
+                          {glossarySaving ? '保存中...' : '保存'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="lovart-menu-wrap">
                 <button
                   type="button"
                   className="lovart-pill"
-                  onClick={() => setOpenMenu((current) => (current === 'subtitle-model' ? null : 'subtitle-model'))}
+                  data-lovart-trigger="subtitle-model"
+                  onClick={() => setOpenMenu((current) => (current === 'utility-model' ? null : 'utility-model'))}
                 >
-                  <span>{frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}</span>
+                  <span>
+                    {isSilencePanel
+                      ? SILENCE_CUT_MODEL_OPTIONS.find(([value]) => value === frameForm.silenceCutModel)?.[1] ?? 'FFmpeg Local'
+                      : frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}
+                  </span>
                   <ChevronIcon />
                 </button>
-                {openMenu === 'subtitle-model' ? (
-                  <div className="lovart-menu" data-lovart-menu="subtitle-model">
+                {openMenu === 'utility-model' ? (
+                  <div className="lovart-menu" data-lovart-menu="utility-model">
                     <div className="lovart-menu-header">モデル</div>
-                    <button type="button" onClick={() => setOpenMenu(null)}>
-                      <span>{frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}</span>
-                      <span className="menu-check">✓</span>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <div className="lovart-menu-wrap">
-                <button
-                  type="button"
-                  className={`lovart-pill${openMenu === 'glossary' ? ' tooltip-hidden' : ''}`}
-                  data-lovart-tooltip="用語辞書"
-                  onClick={() => {
-                    setOpenMenu((current) => (current === 'glossary' ? null : 'glossary'))
-                    fetch('/api/subtitle-glossary')
-                      .then((response) => response.json())
-                      .then((payload) => setGlossaryTerms(Array.isArray(payload.terms) ? payload.terms : []))
-                      .catch(() => setGlossaryTerms([]))
-                  }}
-                >
-                  <span>{glossaryActiveCount > 0 ? `用語 ${glossaryActiveCount}` : '用語'}</span>
-                  <ChevronIcon />
-                </button>
-                {openMenu === 'glossary' ? (
-                  <div className="lovart-menu wide lovart-glossary-menu" data-lovart-menu="glossary">
-                    <div className="lovart-glossary-head">
-                      <div className="lovart-menu-header">用語辞書</div>
-                      <span className="lovart-glossary-scope">プロジェクト共通</span>
-                    </div>
-                    <div className="lovart-glossary-desc">音声認識の表記ゆれを、SRT生成時に統一します。</div>
-                    <div className="lovart-glossary-rows">
-                      {glossaryTerms === null ? (
-                        <div className="lovart-glossary-empty">読み込み中...</div>
-                      ) : glossaryTerms.length === 0 ? (
-                        <div className="lovart-glossary-empty">まだ用語はありません。</div>
-                      ) : (
-                        glossaryTerms.map((term) => (
-                          <div key={term.id} className="lovart-glossary-row">
-                            <input
-                              value={term.from}
-                              placeholder="変換元"
-                              onChange={(event) => updateGlossaryTerm(term.id, 'from', event.target.value)}
-                            />
-                            <input
-                              value={term.to}
-                              placeholder="表示"
-                              onChange={(event) => updateGlossaryTerm(term.id, 'to', event.target.value)}
-                            />
-                            <button type="button" title="削除" onClick={() => removeGlossaryTerm(term.id)}>×</button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                    <button type="button" className="lovart-glossary-add" onClick={addGlossaryTerm}>
-                      + 用語を追加
-                    </button>
+                    {isSilencePanel ? (
+                      SILENCE_CUT_MODEL_OPTIONS.map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          onClick={() => {
+                            updateFrameForm('silenceCutModel', value)
+                            setOpenMenu(null)
+                          }}
+                        >
+                          <span>{label}</span>
+                          {frameForm.silenceCutModel === value ? <span className="menu-check">✓</span> : null}
+                        </button>
+                      ))
+                    ) : (
+                      <button type="button" onClick={() => setOpenMenu(null)}>
+                        <span>{frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}</span>
+                        <span className="menu-check">✓</span>
+                      </button>
+                    )}
                   </div>
                 ) : null}
               </div>
             </div>
             <div className="lovart-ai-right">
-              <div className="lovart-menu-wrap">
+              <div className="lovart-menu-wrap lovart-utility-settings-anchor">
                 <button
                   type="button"
                   className="lovart-pill"
-                  data-lovart-trigger="subtitle-settings"
-                  onClick={() => setOpenMenu((current) => (current === 'subtitle-settings' ? null : 'subtitle-settings'))}
+                  data-lovart-trigger={isSilencePanel ? 'silence-cut-settings' : 'subtitle-settings'}
+                  onClick={() => setOpenMenu((current) => (current === 'utility-settings' ? null : 'utility-settings'))}
                 >
-                  <span>{`${frameForm.subtitleMaxChars}字合計・${frameForm.subtitleLineCount}行`}</span>
+                  <span>
+                    {isSilencePanel
+                      ? `無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・残す ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`
+                      : `${frameForm.subtitleMaxChars}字合計・${frameForm.subtitleLineCount}行`}
+                  </span>
                   <ChevronIcon />
                 </button>
-                {openMenu === 'subtitle-settings' ? (
-                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="subtitle-settings">
+                {openMenu === 'utility-settings' && !isSilencePanel ? (
+                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings lovart-utility-pop" data-lovart-menu="subtitle-settings">
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
                         <div className="lovart-menu-header">最大文字数</div>
@@ -6373,7 +6591,7 @@ export default function App() {
                     <div className="lovart-setting-row">
                       <div className="lovart-menu-header">行数</div>
                     </div>
-                    <div className="lovart-choice-row">
+                    <div className="lovart-choice-row lines">
                       {[1, 2].map((count) => (
                         <button
                           type="button"
@@ -6401,7 +6619,7 @@ export default function App() {
                       type="range"
                       min="0"
                       max="3"
-                      step="0.1"
+                      step="0.05"
                       className="lovart-duration-slider"
                       value={frameForm.subtitleHoldSeconds}
                       style={sliderTrackStyle(frameForm.subtitleHoldSeconds, 0, 3)}
@@ -6410,7 +6628,7 @@ export default function App() {
                     <div className="lovart-setting-row">
                       <div className="lovart-menu-header">字幕末尾の句読点</div>
                     </div>
-                    <div className="lovart-choice-row">
+                    <div className="lovart-choice-row punct">
                       {SUBTITLE_PUNCTUATION_OPTIONS.map(([value, label]) => (
                         <button
                           type="button"
@@ -6428,7 +6646,7 @@ export default function App() {
                         <span className="lovart-info-icon" data-lovart-tooltip="えー・えっとなど明確なフィラーだけを処理します。こう・ちょっと・ねは文脈語として残します。">i</span>
                       </div>
                     </div>
-                    <div className="lovart-choice-row">
+                    <div className="lovart-choice-row filler">
                       {SUBTITLE_FILLER_OPTIONS.map(([value, label]) => (
                         <button
                           type="button"
@@ -6442,145 +6660,9 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
-              </div>
-              <button
-                type="button"
-                className={`lovart-generate${isCurrentFrameGenerating ? ' is-generating' : ''}`}
-                disabled={!frameForm.subtitleAudio || isCurrentFrameGenerating}
-                onClick={runUtilityGeneration}
-              >
-                <LightningIcon />
-                {isCurrentFrameGenerating ? (
-                  <span>Generating...</span>
-                ) : (
-                  <span>{(typeof activePanelCreditEstimate === 'number' ? activePanelCreditEstimate : 0).toLocaleString('ja-JP')}</span>
-                )}
-              </button>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      {showPromptPanel && activeFrameKind === 'silenceCut' ? (
-        <section
-          className={`lovart-ai-panel lovart-utility-panel${openMenuBlocksPrompt ? ' has-open-menu' : ''}`}
-          style={panelStyle}
-          aria-label="Silence Cut Generator"
-          onPointerDown={(event) => {
-            event.stopPropagation()
-            if (event.target instanceof Element && !event.target.closest('.lovart-menu-wrap')) setOpenMenu(null)
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="lovart-prompt-wrap has-video-slots">
-            {frameForm.silenceCutModel === 'elevenlabs-scribe-v2' ? (
-              <textarea
-                className="lovart-ai-prompt"
-                placeholder="カットの指示（例: テンポよく / 間を残して自然に）"
-                value={frameForm.silenceCutInstruction}
-                onChange={(event) => updateFrameForm('silenceCutInstruction', event.target.value)}
-                onFocus={() => setOpenMenu(null)}
-              />
-            ) : (
-              <div className="lovart-utility-hint">動画を添付すると、無音部分を自動でカットします。</div>
-            )}
-            <div className={`lovart-video-frame-tray${frameForm.silenceCutVideo ? ' is-open' : ''}`}>
-              <div className="lovart-video-slot start">
-                <button
-                  type="button"
-                  data-lovart-trigger="silence-cut-video"
-                  className={`lovart-add-frame-btn start${frameForm.silenceCutVideo ? ' has-asset' : ''}`}
-                  title="動画をアップロード"
-                  onClick={() => {
-                    setOpenMenu(null)
-                    rememberGeneratorUploadFrame()
-                    videoFrameUploadTargetRef.current = 'silenceCutVideo'
-                    if (videoFrameUploadInputRef.current) {
-                      videoFrameUploadInputRef.current.accept = getUploadTargetAccept('silenceCutVideo')
-                      videoFrameUploadInputRef.current.multiple = false
-                      videoFrameUploadInputRef.current.click()
-                    }
-                  }}
-                >
-                  {frameForm.silenceCutVideo ? (
-                    <>
-                      {isRenderableVideoPosterDataURL(frameForm.silenceCutVideo.thumbnail) ? (
-                        <img
-                          className="lovart-slot-thumb"
-                          src={frameForm.silenceCutVideo.thumbnail}
-                          alt={frameForm.silenceCutVideo.name || 'video'}
-                        />
-                      ) : null}
-                      <span className="lovart-slot-play">▶</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="lovart-add-plus">+</span>
-                      <span className="lovart-add-label">動画</span>
-                    </>
-                  )}
-                </button>
-                {frameForm.silenceCutVideo ? (
-                  <button type="button" className="lovart-frame-del" onClick={() => patchFrameForm({ silenceCutVideo: null })}>
-                    <CloseIcon />
-                  </button>
-                ) : null}
-              </div>
-              {frameForm.silenceCutVideo?.name ? (
-                <span className="lovart-utility-asset-name">
-                  {frameForm.silenceCutVideo.name}
-                  {frameForm.silenceCutVideo.duration ? ` (${formatAssetDuration(frameForm.silenceCutVideo.duration)})` : ''}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          {generationError ? <div className="lovart-error">{generationError}</div> : null}
-          <div className="lovart-ai-bottom">
-            <div className="lovart-ai-left">
-              <div className="lovart-menu-wrap">
-                <button
-                  type="button"
-                  className="lovart-pill"
-                  onClick={() => setOpenMenu((current) => (current === 'silence-cut-model' ? null : 'silence-cut-model'))}
-                >
-                  <span>{SILENCE_CUT_MODEL_OPTIONS.find(([value]) => value === frameForm.silenceCutModel)?.[1] ?? 'FFmpeg Local'}</span>
-                  <ChevronIcon />
-                </button>
-                {openMenu === 'silence-cut-model' ? (
-                  <div className="lovart-menu" data-lovart-menu="silence-cut-model">
-                    <div className="lovart-menu-header">モデル</div>
-                    {SILENCE_CUT_MODEL_OPTIONS.map(([value, label]) => (
-                      <button
-                        type="button"
-                        key={value}
-                        onClick={() => {
-                          updateFrameForm('silenceCutModel', value)
-                          setOpenMenu(null)
-                        }}
-                      >
-                        <span>{label}</span>
-                        {frameForm.silenceCutModel === value ? <span className="menu-check">✓</span> : null}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-            <div className="lovart-ai-right">
-              <div className="lovart-menu-wrap">
-                <button
-                  type="button"
-                  className="lovart-pill"
-                  data-lovart-trigger="silence-cut-settings"
-                  onClick={() => setOpenMenu((current) => (current === 'silence-cut-settings' ? null : 'silence-cut-settings'))}
-                >
-                  <span>{`無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・残す ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`}</span>
-                  <ChevronIcon />
-                </button>
-                {openMenu === 'silence-cut-settings' ? (
-                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings" data-lovart-menu="silence-cut-settings">
-                    <div className="lovart-menu-header">カットの強さ</div>
+                {openMenu === 'utility-settings' && isSilencePanel ? (
+                  <div className="lovart-menu wide lovart-video-settings lovart-utility-settings lovart-utility-pop" data-lovart-menu="silence-cut-settings">
+                    <div className="lovart-menu-section-title">カットの強さ</div>
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
                         <div className="lovart-menu-header">無音と判定する長さ</div>
@@ -6615,112 +6697,78 @@ export default function App() {
                       style={sliderTrackStyle(frameForm.silenceCutKeepSeconds, 0, 1)}
                       onChange={(event) => updateFrameForm('silenceCutKeepSeconds', Number(event.target.value))}
                     />
-                    <div className="lovart-menu-header lovart-section-gap">AIクリーンアップ</div>
-                    {[
-                      ['silenceCutFillerRemoval', 'フィラー削除', '「えー」「あの」などのつなぎ言葉をAIが検出して削除します。'],
-                      ['silenceCutCoughRemoval', '咳などの不要音', '咳払いやリップノイズなどの不要音をAIが検出して削除します。'],
-                      ['silenceCutRetakeRemoval', '言い直し削除', '言い直した箇所の、最初の言い間違い部分をAIが検出して削除します。']
-                    ].map(([field, label, tooltip]) => {
-                      const aiDisabled = frameForm.silenceCutModel !== 'elevenlabs-scribe-v2'
-                      return (
-                        <div className={`lovart-setting-row lovart-intensity-row${aiDisabled ? ' is-disabled' : ''}`} key={field}>
-                          <div className="lovart-setting-label">
-                            <span className="lovart-intensity-label">{label}</span>
-                            <span className="lovart-info-icon" data-lovart-tooltip={tooltip}>i</span>
+                    <div className="lovart-menu-section">
+                      <div className="lovart-menu-section-title">AIクリーンアップ</div>
+                      {[
+                        ['silenceCutFillerRemoval', 'フィラー削除', '「えー」「あの」などのつなぎ言葉をAIが検出して削除します。'],
+                        ['silenceCutCoughRemoval', '咳などの不要音', '咳払いやリップノイズなどの不要音をAIが検出して削除します。'],
+                        ['silenceCutRetakeRemoval', '言い直し削除', '言い直した箇所の、最初の言い間違い部分をAIが検出して削除します。']
+                      ].map(([field, label, tooltip]) => {
+                        const aiDisabled = frameForm.silenceCutModel !== 'elevenlabs-scribe-v2'
+                        return (
+                          <div className={`lovart-setting-row lovart-intensity-row${aiDisabled ? ' is-disabled' : ''}`} key={field}>
+                            <div className="lovart-setting-label">
+                              <span className="lovart-intensity-label">{label}</span>
+                              <span className="lovart-info-icon" data-lovart-tooltip={tooltip}>i</span>
+                            </div>
+                            <div className="lovart-ai-level">
+                              {SILENCE_CUT_INTENSITY_OPTIONS.map(([value, optionLabel]) => (
+                                <button
+                                  type="button"
+                                  key={value}
+                                  disabled={aiDisabled}
+                                  className={silenceCutAiLevelLabel(frameForm[field]) === optionLabel ? 'is-selected' : ''}
+                                  onClick={() => updateFrameForm(field, value)}
+                                >
+                                  {optionLabel}
+                                </button>
+                              ))}
+                            </div>
                           </div>
-                          <div className="lovart-video-tabs lovart-intensity-tabs">
-                            {SILENCE_CUT_INTENSITY_OPTIONS.map(([value, optionLabel]) => (
-                              <button
-                                type="button"
-                                key={value}
-                                disabled={aiDisabled}
-                                className={silenceCutAiLevelLabel(frameForm[field]) === optionLabel ? 'is-selected' : ''}
-                                onClick={() => updateFrameForm(field, value)}
-                              >
-                                {optionLabel}
-                              </button>
-                            ))}
+                        )
+                      })}
+                    </div>
+                    <div className="lovart-menu-section">
+                      <button
+                        type="button"
+                        className="lovart-advanced-toggle"
+                        onClick={() => setSilenceCutAdvancedOpen((current) => !current)}
+                      >
+                        <span>詳細設定</span>
+                        <span className={`lovart-advanced-chevron${silenceCutAdvancedOpen ? ' is-open' : ''}`}><ChevronIcon /></span>
+                      </button>
+                      {silenceCutAdvancedOpen ? (
+                        <>
+                          <div className="lovart-setting-row">
+                            <div className="lovart-setting-label">
+                              <div className="lovart-menu-header">無音判定の音量</div>
+                              <span className="lovart-info-icon" data-lovart-tooltip="マイクや部屋に合わせる校正値です。喋りの途中で切れるときは下げ、無音が残るときは上げてください。">i</span>
+                            </div>
+                            <span>{Math.round(frameForm.silenceCutThresholdDb)}dB</span>
                           </div>
-                        </div>
-                      )
-                    })}
-                    <button
-                      type="button"
-                      className="lovart-advanced-toggle"
-                      onClick={() => setSilenceCutAdvancedOpen((current) => !current)}
-                    >
-                      詳細設定 {silenceCutAdvancedOpen ? '▲' : '▼'}
-                    </button>
-                    {silenceCutAdvancedOpen ? (
-                      <>
-                        <div className="lovart-setting-row">
-                          <div className="lovart-setting-label">
-                            <div className="lovart-menu-header">無音判定の音量</div>
-                            <span className="lovart-info-icon" data-lovart-tooltip="マイクや部屋に合わせる校正値です。喋りの途中で切れるときは下げ、無音が残るときは上げてください。">i</span>
-                          </div>
-                          <span>{Math.round(frameForm.silenceCutThresholdDb)}dB</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="-60"
-                          max="-20"
-                          step="1"
-                          className="lovart-duration-slider"
-                          value={frameForm.silenceCutThresholdDb}
-                          style={sliderTrackStyle(frameForm.silenceCutThresholdDb, -60, -20)}
-                          onChange={(event) => updateFrameForm('silenceCutThresholdDb', Number(event.target.value))}
-                        />
-                        <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">カット前の余白</div>
-                          <span>{formatSecondsValue(frameForm.silenceCutPreMarginSeconds)}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.05"
-                          max="0.3"
-                          step="0.01"
-                          className="lovart-duration-slider"
-                          value={frameForm.silenceCutPreMarginSeconds}
-                          style={sliderTrackStyle(frameForm.silenceCutPreMarginSeconds, 0.05, 0.3)}
-                          onChange={(event) => updateFrameForm('silenceCutPreMarginSeconds', Number(event.target.value))}
-                        />
-                        <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">カット後の余白</div>
-                          <span>{formatSecondsValue(frameForm.silenceCutPostMarginSeconds)}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.05"
-                          max="0.3"
-                          step="0.01"
-                          className="lovart-duration-slider"
-                          value={frameForm.silenceCutPostMarginSeconds}
-                          style={sliderTrackStyle(frameForm.silenceCutPostMarginSeconds, 0.05, 0.3)}
-                          onChange={(event) => updateFrameForm('silenceCutPostMarginSeconds', Number(event.target.value))}
-                        />
-                        <div className="lovart-setting-row">
-                          <div className="lovart-menu-header">音声のつなぎ</div>
-                          <span>{formatSecondsValue(frameForm.silenceCutAudioFadeSeconds)}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.1"
-                          step="0.01"
-                          className="lovart-duration-slider"
-                          value={frameForm.silenceCutAudioFadeSeconds}
-                          style={sliderTrackStyle(frameForm.silenceCutAudioFadeSeconds, 0, 0.1)}
-                          onChange={(event) => updateFrameForm('silenceCutAudioFadeSeconds', Number(event.target.value))}
-                        />
-                      </>
-                    ) : null}
+                          <input
+                            type="range"
+                            min="-60"
+                            max="-20"
+                            step="1"
+                            className="lovart-duration-slider"
+                            value={frameForm.silenceCutThresholdDb}
+                            style={sliderTrackStyle(frameForm.silenceCutThresholdDb, -60, -20)}
+                            onChange={(event) => updateFrameForm('silenceCutThresholdDb', Number(event.target.value))}
+                          />
+                          {renderSilenceStepper('カット前の余白', 'silenceCutPreMarginSeconds', 0.05, 0.3, 0.01)}
+                          {renderSilenceStepper('カット後の余白', 'silenceCutPostMarginSeconds', 0.05, 0.3, 0.01)}
+                          {renderSilenceStepper('音声のつなぎ', 'silenceCutAudioFadeSeconds', 0, 0.1, 0.01)}
+                        </>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
               </div>
               <button
                 type="button"
                 className={`lovart-generate${isCurrentFrameGenerating ? ' is-generating' : ''}`}
-                disabled={!frameForm.silenceCutVideo || isCurrentFrameGenerating}
+                disabled={!canGenerate || isCurrentFrameGenerating}
                 onClick={runUtilityGeneration}
               >
                 <LightningIcon />
@@ -6733,7 +6781,8 @@ export default function App() {
             </div>
           </div>
         </section>
-      ) : null}
+        )
+      })() : null}
       {canvasPicker ? (
         <div className="lovart-canvas-picker-bar">
           <span>キャンバスから選択</span>
@@ -6743,7 +6792,7 @@ export default function App() {
       <input
         ref={imageUploadInputRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*"
         multiple
         hidden
         onChange={onImageUploadChange}

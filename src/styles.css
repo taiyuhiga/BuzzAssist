@@ -1186,41 +1186,6 @@ body {
     sans-serif;
 }
 
-.lovart-utility-hint {
-  box-sizing: border-box;
-  min-height: 80px;
-  padding: 4px 2px 60px;
-  color: #b8bec8;
-  font: 400 14px/1.5 Nunito, "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-}
-
-.lovart-utility-asset-name {
-  align-self: center;
-  max-width: 220px;
-  margin-left: 8px;
-  overflow: hidden;
-  color: #808996;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: 500 11px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-}
-
-.lovart-audio-slot-btn.has-asset {
-  flex-direction: column;
-  gap: 3px;
-  color: #333333;
-  background: #f5f5f5;
-}
-
-.lovart-audio-slot-duration {
-  color: #555555;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1;
-}
-
 .lovart-utility-settings {
   max-height: min(52vh, 420px);
   overflow-y: auto;
@@ -1237,34 +1202,61 @@ body {
 }
 
 .lovart-menu .lovart-choice-row button {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: auto;
-  padding: 6px 10px;
-  color: #555555;
+  height: 34px;
+  padding: 0;
+  color: #333333;
   text-align: center;
+  background: #ffffff;
   border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border-radius: 10px;
   white-space: nowrap;
-  font: 500 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+  font: 500 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+}
+
+.lovart-menu .lovart-choice-row.lines button {
+  width: 68px;
+}
+
+.lovart-menu .lovart-choice-row.punct button {
+  width: 98px;
+}
+
+.lovart-menu .lovart-choice-row.filler button {
+  width: 80px;
 }
 
 .lovart-menu .lovart-choice-row button.is-selected {
   color: #7c3aed;
   background: #f3f0ff;
-  border-color: #7c3aed;
+  border: 1.5px solid #7c3aed;
 }
 
 .lovart-menu .lovart-advanced-toggle {
-  justify-content: center;
-  margin-top: 6px;
-  color: #80868b;
-  border: 1px dashed #d9dde6;
-  border-radius: 8px;
-  font: 600 11px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-start;
+  width: auto;
+  padding: 0;
+  color: #888888;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  font: 600 12px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+}
+
+.lovart-advanced-chevron {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.lovart-advanced-chevron.is-open {
+  transform: rotate(180deg);
 }
 
 /* The SRT preview mirrors Youtube-AGI's SubtitleScrollablePreviewOverlay: it
@@ -1473,39 +1465,9 @@ body {
   background: rgba(124, 58, 237, 0.08);
 }
 
-.lovart-download-chip {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  z-index: 4;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #374151;
-  font-size: 12px;
-  font-weight: 600;
-  box-shadow: 0 6px 20px rgba(17, 24, 39, 0.12);
-  cursor: pointer;
-}
-
-.lovart-download-chip:hover:not(:disabled) {
-  border-color: #c4b5fd;
-  color: #7c3aed;
-}
-
-.lovart-download-chip:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 /* Project-common glossary menu (SRT 用語 pill) */
 .lovart-glossary-menu {
-  width: 340px;
+  width: 360px;
   padding: 10px;
 }
 
@@ -1575,21 +1537,54 @@ body {
   padding: 8px 2px;
 }
 
-.lovart-glossary-add {
+.lovart-glossary-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-top: 10px;
-  width: 100%;
-  height: 30px;
-  border: 1px dashed #d0d0d0;
-  border-radius: 8px;
-  background: #fafafa;
-  color: #5f6368;
+}
+
+.lovart-menu .lovart-glossary-add {
+  width: auto;
+  padding: 6px 8px;
+  color: #5a6270;
   font-size: 12px;
   cursor: pointer;
 }
 
-.lovart-glossary-add:hover {
-  border-color: #c4b5fd;
+.lovart-menu .lovart-glossary-add:hover {
   color: #7c3aed;
+}
+
+.lovart-glossary-status {
+  margin-left: auto;
+  max-width: 130px;
+  overflow: hidden;
+  color: #5f6368;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lovart-glossary-status.is-error {
+  color: #d93025;
+}
+
+.lovart-menu .lovart-glossary-save {
+  width: auto;
+  padding: 6px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #202124;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lovart-menu .lovart-glossary-save:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* Desktop-app parity: setting rows with info tooltips, section spacing,
@@ -1760,4 +1755,400 @@ body {
 
 .lovart-menu-grid.compact.mode button {
   width: 78px;
+}
+
+/* Shared SRT + silence-cut panel, matching the BuzzAssist desktop app: one
+   .lovart-ai-panel with the free prompt on top and tilted 56px asset cards
+   peeking from the prompt's bottom edge. Hovering the cards (or having any
+   asset attached) opens the tray: the prompt shrinks to 48px and the cards
+   straighten out to 56x74. */
+.lovart-utility-tray-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.lovart-utility-tray-wrap.is-open {
+  height: 140px;
+  overflow: visible;
+}
+
+.lovart-utility-tray-wrap .lovart-ai-prompt {
+  box-sizing: border-box;
+  min-height: 80px;
+  padding-bottom: 60px;
+  resize: none;
+}
+
+.lovart-utility-tray-wrap.is-open .lovart-ai-prompt {
+  height: 48px;
+  min-height: 48px;
+  padding-bottom: 0;
+  overflow-y: auto;
+}
+
+.lovart-utility-asset-tray {
+  position: absolute;
+  right: 12px;
+  bottom: -20px;
+  left: 12px;
+  display: flex;
+  gap: 0;
+  align-items: flex-end;
+  overflow: visible;
+  transition: bottom 0.15s ease, gap 0.15s ease;
+}
+
+.lovart-utility-tray-wrap.is-open .lovart-utility-asset-tray {
+  bottom: 8px;
+  gap: 4px;
+}
+
+.lovart-utility-slot {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.lovart-utility-slot.primary {
+  order: 1;
+}
+
+.lovart-utility-slot.script {
+  order: 0;
+}
+
+.lovart-utility-tilt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.04);
+  transition: transform 0.15s ease, height 0.15s ease;
+}
+
+.lovart-utility-tilt-card .lovart-add-plus {
+  color: #bbbbbb;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.lovart-utility-tilt-card.primary {
+  z-index: 0;
+  margin-left: -8px;
+  transform: rotate(4deg);
+}
+
+.lovart-utility-tilt-card.script {
+  z-index: 1;
+  transform: rotate(-6deg);
+}
+
+.lovart-utility-tray-wrap.is-open .lovart-utility-tilt-card {
+  gap: 2px;
+  height: 74px;
+  margin-left: 0;
+  transform: none;
+}
+
+.lovart-utility-tilt-card.is-disabled {
+  cursor: not-allowed;
+  background: #f3f3f3;
+  border-color: #ededed;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.02);
+  opacity: 0.55;
+}
+
+.lovart-utility-tilt-card.is-disabled .lovart-add-plus {
+  color: #c7c7c7;
+}
+
+.lovart-utility-card-hint {
+  color: #aaaaaa;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.lovart-utility-card-wrap {
+  position: relative;
+  width: 56px;
+  height: 74px;
+}
+
+.lovart-utility-asset-card {
+  position: relative;
+  box-sizing: border-box;
+  width: 56px;
+  height: 74px;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.lovart-utility-asset-card.audio,
+.lovart-utility-asset-card.script {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  color: #333333;
+  background: #f5f5f5;
+}
+
+.lovart-utility-asset-card.video {
+  display: block;
+  background: #000000;
+}
+
+.lovart-utility-card-label {
+  color: #555555;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.lovart-utility-card-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lovart-utility-card-thumb.placeholder {
+  background: linear-gradient(180deg, #111827 0%, #1f2937 100%);
+}
+
+.lovart-utility-card-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgb(0 0 0 / 0.45);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.lovart-utility-card-wrap .lovart-frame-del {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 2;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #ffffff;
+  cursor: pointer;
+  background: rgb(0 0 0 / 0.5);
+  border: 0;
+  border-radius: 50%;
+}
+
+.lovart-utility-card-wrap:hover .lovart-frame-del {
+  display: flex;
+}
+
+/* 台本あり/台本なし segmented control (desktop-app style) */
+.lovart-mode-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: #f0f0f0;
+  border-radius: 20px;
+}
+
+.lovart-mode-switch button {
+  padding: 7px 16px;
+  color: #555555;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  white-space: nowrap;
+  font: 500 12px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-mode-switch button.is-selected {
+  background: #ffffff;
+  border-color: #dddddd;
+}
+
+/* Settings menu pops from the panel's bottom-right corner (desktop parity) */
+.lovart-menu-wrap.lovart-utility-settings-anchor {
+  position: static;
+}
+
+.lovart-menu.lovart-utility-pop {
+  top: auto;
+
+  /* Anchored to .lovart-ai-bottom (position: relative); these offsets place the
+     menu 15px past the panel's outer right edge and 1px above its outer bottom,
+     exactly where the desktop app's bottom-0/right--16px (vs the panel root)
+     menu lands. */
+  right: -30px;
+  bottom: -10px;
+  left: auto;
+  z-index: 100;
+  min-width: 304px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 2px 16px rgb(0 0 0 / 0.1);
+}
+
+.lovart-menu.lovart-utility-pop[data-lovart-menu='silence-cut-settings'] {
+  width: 344px;
+}
+
+.lovart-menu-section-title {
+  padding: 0 0 6px;
+  color: #999999;
+  letter-spacing: 0.02em;
+  font: 600 11px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-menu-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* AI cleanup levels: オフ/弱/中/強 as 42x30 buttons */
+.lovart-ai-level {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.lovart-menu .lovart-ai-level button {
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 30px;
+  padding: 0;
+  color: #333333;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font: 500 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-menu .lovart-ai-level button.is-selected {
+  color: #7c3aed;
+  background: #f3f0ff;
+  border: 1.5px solid #7c3aed;
+}
+
+.lovart-intensity-row.is-disabled .lovart-ai-level button {
+  cursor: default;
+}
+
+/* Advanced margins/fade: −/＋ steppers (desktop parity) */
+.lovart-stepper {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+.lovart-menu .lovart-stepper button {
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: #555555;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font: 500 14px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-menu .lovart-stepper button:disabled {
+  color: #cccccc;
+  cursor: default;
+}
+
+.lovart-stepper span {
+  min-width: 52px;
+  color: #666666;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.lovart-stepper-row {
+  margin-top: 8px;
+}
+
+/* Lovart-style floating selection toolbar: appears above the selection bounds
+   of any clicked or marquee-selected media and offers download (single file
+   direct, multiple as ZIP). Sits in the canvas-overlay band (above headers at
+   z 3, below floating panels at z >= 12). */
+.lovart-selection-toolbar {
+  position: absolute;
+  z-index: 4;
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid #ececf1;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgb(17 24 39 / 0.14);
+  transform: translateX(-50%);
+}
+
+.lovart-selection-toolbar-btn {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  color: #374151;
+  text-decoration: none;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+}
+
+.lovart-selection-toolbar-btn:hover:not(:disabled) {
+  color: #7c3aed;
+  background: #f3f0ff;
+}
+
+.lovart-selection-toolbar-btn:disabled {
+  color: #9ca3af;
+  cursor: default;
+}
+
+.lovart-selection-toolbar-count {
+  font-size: 12px;
+  font-weight: 600;
 }
