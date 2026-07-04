@@ -217,6 +217,12 @@ async function ensureCanvasVisible(args = {}) {
   }
 }
 
+function canvasHintText() {
+  const port = Number(process.env.EXCALIDRAW_PORT ?? 43219);
+  const baseUrl = nonEmptyString(process.env.EXCALIDRAW_CANVAS_URL) || `http://127.0.0.1:${port}`;
+  return ` Canvas: ${baseUrl} — show it to the user now (in Claude Code, open it in the built-in preview via the 'canvas' config in .claude/launch.json; do not open an external browser).`;
+}
+
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -1174,7 +1180,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_IMAGE,
       title: "Generate Excalidraw Image",
-      description: "Generate an image with GPT-Image-2.0(Codex) or Grok Imagine(Hermes), insert it into the canvas, and save the scene.",
+      description: "Generate an image with GPT-Image-2.0(Codex) or Grok Imagine(Hermes), insert it into the canvas, and save the scene. BEFORE calling: if the user did not explicitly choose the model, aspect ratio, or quality, ask them first with the AskUserQuestion tool (mark defaults as Recommended: GPT-Image-2.0(Codex), 1:1, Auto) — do not silently pick defaults. AFTER completing, show the user the canvas: in Claude Code open http://127.0.0.1:43219 in the built-in preview (launch config 'canvas'); otherwise share the URL.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1219,7 +1225,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_VIDEO,
       title: "Generate Excalidraw Video",
-      description: "Generate a video with Grok Imagine(Hermes), insert a Youtube-AGI-style video media element into the canvas, and save the scene.",
+      description: "Generate a video with Grok Imagine(Hermes), insert a Youtube-AGI-style video media element into the canvas, and save the scene. BEFORE calling: if the user did not explicitly choose the model, aspect ratio, duration, or resolution, ask them first with the AskUserQuestion tool (mark defaults as Recommended: Grok Imagine(Hermes), 16:9, 5s, 720p) — do not silently pick defaults. AFTER completing, show the user the canvas: in Claude Code open http://127.0.0.1:43219 in the built-in preview (launch config 'canvas'); otherwise share the URL.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1278,7 +1284,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_IMAGES_BATCH,
       title: "Generate Excalidraw Images (Batch)",
-      description: "Create Youtube-AGI-style image generator frames first, then generate many images with GPT-Image-2.0(Codex) or Grok Imagine(Hermes) and replace each frame as its result finishes.",
+      description: "Create Youtube-AGI-style image generator frames first, then generate many images with GPT-Image-2.0(Codex) or Grok Imagine(Hermes) and replace each frame as its result finishes. BEFORE calling: if the user did not explicitly choose the model, aspect ratio, or quality for the batch, ask once with the AskUserQuestion tool. AFTER completing, show the user the canvas: in Claude Code open http://127.0.0.1:43219 in the built-in preview (launch config 'canvas').",
       inputSchema: {
         type: "object",
         properties: {
@@ -1327,7 +1333,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_VIDEOS_BATCH,
       title: "Generate Excalidraw Videos (Batch)",
-      description: "Create Youtube-AGI-style video generator frames first, then generate many videos with Grok Imagine(Hermes) and replace each frame as its result finishes.",
+      description: "Create Youtube-AGI-style video generator frames first, then generate many videos with Grok Imagine(Hermes) and replace each frame as its result finishes. BEFORE calling: if the user did not explicitly choose the model, aspect ratio, duration, or resolution for the batch, ask once with the AskUserQuestion tool. AFTER completing, show the user the canvas: in Claude Code open http://127.0.0.1:43219 in the built-in preview (launch config 'canvas').",
       inputSchema: {
         type: "object",
         properties: {
@@ -1377,7 +1383,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_SUBTITLES,
       title: "Generate Excalidraw Subtitles",
-      description: "Generate Japanese SRT subtitles from an audio file via BuzzAssist cloud (ElevenLabs forced alignment when a script is given, Scribe v2 otherwise), save the SRT under canvas/assets, and place an SRT card on the canvas. Requires buzzassist_login. For best line breaks use the two-step LLM flow: call once with returnWordsOnly=true to get timed words, decide semantic line breaks yourself (respect maxCharsPerLine and 1-2 lines per cue), then call again with subtitleLines to render and place the SRT without a second cloud call.",
+      description: "Generate Japanese SRT subtitles from an audio file via BuzzAssist cloud (ElevenLabs forced alignment when a script is given, Scribe v2 otherwise), save the SRT under canvas/assets, and place an SRT card on the canvas. Requires buzzassist_login. BEFORE calling: if the user did not explicitly choose the mode (scripted vs scriptless), line count, or max chars per line, ask them first with the AskUserQuestion tool — do not silently pick defaults. For best line breaks use the two-step LLM flow: call once with returnWordsOnly=true to get timed words, decide semantic line breaks yourself (respect maxCharsPerLine and 1-2 lines per cue), then call again with subtitleLines to render and place the SRT without a second cloud call. AFTER completing, show the user the canvas: in Claude Code open it in the built-in preview (launch config 'canvas').",
       inputSchema: {
         type: "object",
         properties: {
@@ -1428,7 +1434,7 @@ function toolDefinitions() {
     {
       name: TOOL_SILENCE_CUT_VIDEO,
       title: "Silence Cut Excalidraw Video",
-      description: "Remove silences from a local video (jet cut), then insert the cut video into the canvas with cut statistics. model=ffmpeg-local runs fully offline; model=elevenlabs-scribe-v2 transcribes via BuzzAssist (requires buzzassist_login, ~1 credit/min) and additionally removes fillers, coughs, and retakes from word timestamps. Use dryRun first to preview the cut plan without rendering.",
+      description: "Remove silences from a local video (jet cut), then insert the cut video into the canvas with cut statistics. model=ffmpeg-local runs fully offline; model=elevenlabs-scribe-v2 transcribes via BuzzAssist (requires buzzassist_login, ~1 credit/min) and additionally removes fillers, coughs, and retakes from word timestamps. BEFORE calling: if the user did not explicitly choose the model or the AI removal intensities (filler/cough/retake), ask them first with the AskUserQuestion tool — do not silently pick defaults. Use dryRun first to preview the cut plan without rendering. AFTER completing, show the user the canvas: in Claude Code open it in the built-in preview (launch config 'canvas').",
       inputSchema: {
         type: "object",
         properties: {
@@ -1786,7 +1792,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `Generated ${result.cueCount} subtitle cue(s) with ${result.model} (${result.mode})${result.dryRun ? " [dry run]" : ""}.`,
+          text: `Generated ${result.cueCount} subtitle cue(s) with ${result.model} (${result.mode})${result.dryRun ? " [dry run]" : ""}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
@@ -1800,7 +1806,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `Silence-cut ${result.cutCount} range(s): ${result.inputDuration.toFixed(1)}s -> ${result.outputDuration.toFixed(1)}s (${result.cutDuration.toFixed(1)}s removed)${result.dryRun ? " [dry run]" : ""}.`,
+          text: `Silence-cut ${result.cutCount} range(s): ${result.inputDuration.toFixed(1)}s -> ${result.outputDuration.toFixed(1)}s (${result.cutDuration.toFixed(1)}s removed)${result.dryRun ? " [dry run]" : ""}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
@@ -1933,7 +1939,7 @@ async function handleToolCall(id, params) {
           type: "text",
           text: result.payloadPreview
             ? `Payload preview for ${result.model}${result.endpoint ? ` -> ${result.endpoint}` : ""}: ~${result.estimatedCredits ?? "?"} credits.`
-            : `${result.dryRun ? "Planned" : "Generated"} image ${result.elementId} at (${result.bounds.x}, ${result.bounds.y}) sized ${result.bounds.width}x${result.bounds.height}.`,
+            : `${result.dryRun ? "Planned" : "Generated"} image ${result.elementId} at (${result.bounds.x}, ${result.bounds.y}) sized ${result.bounds.width}x${result.bounds.height}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
@@ -1949,7 +1955,7 @@ async function handleToolCall(id, params) {
           type: "text",
           text: result.payloadPreview
             ? `Payload preview for ${result.model}${result.endpoint ? ` -> ${result.endpoint}` : ""}: ~${result.estimatedCredits ?? "?"} credits.`
-            : `${result.dryRun ? "Planned" : "Generated"} video media element ${result.elementId} at (${result.bounds.x}, ${result.bounds.y}) sized ${result.bounds.width}x${result.bounds.height}.`,
+            : `${result.dryRun ? "Planned" : "Generated"} video media element ${result.elementId} at (${result.bounds.x}, ${result.bounds.y}) sized ${result.bounds.width}x${result.bounds.height}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
@@ -1963,7 +1969,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `${result.dryRun ? "Planned" : "Generated"} ${result.succeeded}/${result.total} image(s) as a grid${result.failed ? `, ${result.failed} failed` : ""}.`,
+          text: `${result.dryRun ? "Planned" : "Generated"} ${result.succeeded}/${result.total} image(s) as a grid${result.failed ? `, ${result.failed} failed` : ""}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
@@ -1977,7 +1983,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `${result.dryRun ? "Planned" : "Generated"} ${result.succeeded}/${result.total} video media element(s) as a grid${result.failed ? `, ${result.failed} failed` : ""}.`,
+          text: `${result.dryRun ? "Planned" : "Generated"} ${result.succeeded}/${result.total} video media element(s) as a grid${result.failed ? `, ${result.failed} failed` : ""}.${result.dryRun ? "" : canvasHintText()}`,
         },
       ],
       structuredContent: result,
