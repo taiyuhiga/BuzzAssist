@@ -42,18 +42,21 @@ Use this skill when the user wants SRT subtitles generated from audio and placed
 
 ## Higher-Quality Line Breaks (LLM Flow)
 
-For the best semantic line breaks, use the two-step flow instead of one call:
+For the best quality, use the two-step flow instead of one call — step 2 is BOTH proofreading and line breaking:
 
 1. Call `generate_excalidraw_subtitles` with `returnWordsOnly: true` — you get the transcript and timed `words`.
-2. Decide cue boundaries yourself: natural Japanese phrase boundaries, 1-2 lines per cue, respect `maxCharsPerLine`, never split 名詞+助詞 pairs awkwardly, and use `\n` for the second line.
-3. Call the tool again with `subtitleLines: [{text, start, end}, ...]` — it renders the SRT and places the card without a second cloud call (no extra credits).
+2. **Proofread the transcript first**: fix homophones（機会/機械、以外/意外）, conversion mistakes, dropped characters, and unify spelling variants（引越し/引っ越し）. Change notation ONLY — never what was said — and prefer the project glossary's spellings. Then decide cue boundaries: natural Japanese bunsetsu boundaries (never right after a particle, never mid compound verb), 1-2 lines per cue, respect `maxCharsPerLine`, and use `\n` for the second line.
+3. Call the tool again with `subtitleLines: [{text, start, end}, ...]` using the corrected text — it renders the SRT and places the card without a second cloud call (no extra credits). Keep each cue's start/end from the word timings.
 
+## 無音カットと併用するときの順序
+
+先に `silence_cut_excalidraw_video` でカットし、**カット後の動画/音声からSRTを生成**してください。逆順だとカットした分だけ全タイムコードがズレます。
 
 ## 高精度化オプション
 
-- `glossary: [{from, to}]` — 固有名詞の表記補正（用語辞書）。文字起こし直後に適用
-- `normalizeAudio` (default true) — 音量が小さい音源（平均 -30dB 未満）を自動でラウドネス正規化してから転写
-- 品質検証: 行長超過・重複・極短キューを自動検出し、違反があれば文字数を詰めて一度だけ再分割した良い方を採用（結果の `quality.issues` で確認可能)
+- `glossary: [{from, to}]` — 固有名詞の表記補正（用語辞書）。文字起こし直後に適用され、カタカナ/ひらがなの表記ゆれにも自動でマッチ
+- `normalizeAudio` (default true) — 常にラウドネス正規化＋低域ノイズ除去（highpass 80Hz）をかけてから転写。認識精度と時刻精度が上がる
+- 品質検証: 行長超過・重複・極短キュー・読速超過（10.5字/秒超）を自動検出し、違反があれば文字数を詰めて一度だけ再分割した良い方を採用。さらに音声エネルギーと照合して「無音区間の字幕」「字幕のない発話区間」も警告（結果の `quality.issues` で確認可能）
 
 ## Guardrails
 

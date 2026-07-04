@@ -136,14 +136,14 @@ const SUBTITLE_MODE_OPTIONS = [
 ]
 
 const SUBTITLE_PUNCTUATION_OPTIONS = [
-  ['auto', '付ける'],
-  ['none', 'なし']
+  ['auto', '自動で付ける'],
+  ['none', '付けない']
 ]
 
 const SUBTITLE_FILLER_OPTIONS = [
-  ['keep', 'そのまま'],
-  ['safe', '明確だけ'],
-  ['contextual', 'AI判断']
+  ['keep', '残す'],
+  ['safe', '控えめに消す'],
+  ['contextual', 'しっかり消す']
 ]
 
 // Youtube-AGI SILENCE_CUT_MODEL_OPTIONS
@@ -2555,6 +2555,7 @@ export default function App() {
   const [lovartKeyEditing, setLovartKeyEditing] = useState(false)
   const [hermesStatus, setHermesStatus] = useState(null)
   const [bulkDownloading, setBulkDownloading] = useState(false)
+  const [proofreadCopied, setProofreadCopied] = useState(false)
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
   const [glossaryTerms, setGlossaryTerms] = useState(null)
@@ -5367,7 +5368,9 @@ export default function App() {
         // directly, multiple items download as one ZIP.
         const selectedMedia = [
           ...selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl),
-          ...subtitlePreviewOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl)
+          ...subtitlePreviewOverlays
+            .filter((overlay) => overlay.isSelected && overlay.assetUrl)
+            .map((overlay) => ({ ...overlay, assetType: 'srt' }))
         ]
         if (selectedMedia.length === 0) return null
         const boundsLeft = Math.min(...selectedMedia.map((overlay) => overlay.left))
@@ -5412,6 +5415,29 @@ export default function App() {
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
           >
+            {single && selectedMedia[0].assetType === 'srt' ? (
+              <button
+                type="button"
+                className="lovart-selection-toolbar-btn"
+                title="AIエージェントで校正（チャットに貼るプロンプトをコピー）"
+                onClick={() => {
+                  const target = selectedMedia[0]
+                  const assetName = target.assetUrl.split('/').pop().split('?')[0]
+                  const prompt = [
+                    'キャンバスで選択中のSRT字幕を校正して置き換えて。',
+                    `対象: canvas/assets/${assetName}（要素ID: ${target.id}）`,
+                    '手順:',
+                    '1. SRTファイルを読み、時刻はそのままにテキストだけ校正する（同音異義語・変換ミス・脱字・表記ゆれを修正。発言内容は変えない。canvas/subtitle-glossary.json の用語辞書の表記を優先）',
+                    `2. excalidraw MCP の generate_excalidraw_subtitles を subtitleLines（各cueの text/start/end）+ anchorElementId "${target.id}" + replaceAnchor: true + confirmedSettings: true で呼んでカードを置き換える`
+                  ].join('\n')
+                  navigator.clipboard?.writeText(prompt).catch(() => {})
+                  setProofreadCopied(true)
+                  window.setTimeout(() => setProofreadCopied(false), 2000)
+                }}
+              >
+                <span className="lovart-selection-toolbar-count">{proofreadCopied ? 'コピー済み' : '校正'}</span>
+              </button>
+            ) : null}
             {single ? (
               <a
                 className="lovart-selection-toolbar-btn"
@@ -6555,7 +6581,7 @@ export default function App() {
                   <span>
                     {isSilencePanel
                       ? `無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・残す ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`
-                      : `${frameForm.subtitleMaxChars}字合計・${frameForm.subtitleLineCount}行`}
+                      : `${frameForm.subtitleMaxChars}字・${frameForm.subtitleLineCount}行`}
                   </span>
                   <ChevronIcon />
                 </button>
@@ -6563,10 +6589,13 @@ export default function App() {
                   <div className="lovart-menu wide lovart-video-settings lovart-utility-settings lovart-utility-pop" data-lovart-menu="subtitle-settings">
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">最大文字数</div>
-                        <span className="lovart-info-icon" data-lovart-tooltip="1つの字幕に表示する文字数の上限です。これを超える場合は字幕が分割されます。">i</span>
+                        <div className="lovart-menu-header">字幕1枚の文字数</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="字幕1枚に表示する文字数の上限です（2行のときは2行の合計）。超える場合は次の字幕に分割されます。">i</span>
                       </div>
-                      <span>{frameForm.subtitleMaxChars}字 合計</span>
+                      <span>
+                        {frameForm.subtitleMaxChars}字
+                        {frameForm.subtitleLineCount === 2 ? `（約${Math.ceil(frameForm.subtitleMaxChars / 2)}字×2行）` : ''}
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -6579,7 +6608,7 @@ export default function App() {
                       onChange={(event) => updateFrameForm('subtitleMaxChars', Number(event.target.value))}
                     />
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">行数</div>
+                      <div className="lovart-menu-header">最大行数</div>
                     </div>
                     <div className="lovart-choice-row lines">
                       {[1, 2].map((count) => (
@@ -6600,10 +6629,10 @@ export default function App() {
                     </div>
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">最大表示時間</div>
-                        <span className="lovart-info-icon" data-lovart-tooltip="音声が終わった後も、その字幕を画面に残しておく最大の時間です。次の字幕が来る場合は、次の字幕を優先します。">i</span>
+                        <div className="lovart-menu-header">余韻（表示を残す時間）</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="話し終わったあとも字幕を画面に残す時間です。例: 0.5秒なら話し終わりから0.5秒残ります。次の字幕が来る場合はそちらを優先します。">i</span>
                       </div>
-                      <span>{Number(frameForm.subtitleHoldSeconds).toFixed(2)}秒</span>
+                      <span>{Number(frameForm.subtitleHoldSeconds) > 0 ? `${Number(frameForm.subtitleHoldSeconds).toFixed(2)}秒` : 'なし'}</span>
                     </div>
                     <input
                       type="range"
@@ -6616,7 +6645,10 @@ export default function App() {
                       onChange={(event) => updateFrameForm('subtitleHoldSeconds', Number(event.target.value))}
                     />
                     <div className="lovart-setting-row">
-                      <div className="lovart-menu-header">字幕末尾の句読点</div>
+                      <div className="lovart-setting-label">
+                        <div className="lovart-menu-header">字幕末尾の句読点</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="文末に「。」や「？」を自動で付けます（疑問文には？）。テロップらしく句読点なしにしたい場合は「付けない」。">i</span>
+                      </div>
                     </div>
                     <div className="lovart-choice-row punct">
                       {SUBTITLE_PUNCTUATION_OPTIONS.map(([value, label]) => (
@@ -6632,8 +6664,8 @@ export default function App() {
                     </div>
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">フィラー処理</div>
-                        <span className="lovart-info-icon" data-lovart-tooltip="えー・えっとなど明確なフィラーだけを処理します。こう・ちょっと・ねは文脈語として残します。">i</span>
+                        <div className="lovart-menu-header">フィラー（えー・あのー）</div>
+                        <span className="lovart-info-icon" data-lovart-tooltip="つなぎ言葉の扱いです。控えめ=明確なフィラーだけ削除（「えー、今日は」→「今日は」）。しっかり=あの・その・まあも削除。こう・ちょっと・ね等の文脈語は常に残します。">i</span>
                       </div>
                     </div>
                     <div className="lovart-choice-row filler">

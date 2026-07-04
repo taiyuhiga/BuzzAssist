@@ -49,6 +49,10 @@ Use this skill when the user wants silences removed from a video and the result 
 
 **まず `dryRun: true` でカットプランを確認**（候補一覧・削減秒数が返る。レンダリングなし・転写 1 クレジットのみ）してから本実行するのが推奨フローです。
 
+## SRTと併用するときの順序
+
+字幕も付ける場合は**先に無音カット→カット後の動画/音声から `generate_excalidraw_subtitles` でSRT生成**。逆順だとカットした分だけ字幕の全タイムコードがズレます。
+
 ## Guardrails
 
 - Defaults are tuned for Japanese talk videos; only override when the user asks (e.g. more aggressive cutting → raise `thresholdDb` toward -30 or lower `detectSeconds`).
