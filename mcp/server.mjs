@@ -55,13 +55,13 @@ const MEDIA_GENERATION_AGENT_INSTRUCTIONS = [
   "When the user asks to set up Hermes, or a Hermes-route generation fails with 'Hermes Agent was not found' or 'not logged in to xAI Grok OAuth', call setup_hermes_grok — it runs the browser OAuth (hermes auth add xai-oauth) so the user just approves in X.",
   "Lovart models (require LOVART_ACCESS_KEY/LOVART_SECRET_KEY or ~/.lovart/credentials.json; billed in Lovart credits): images lovart-midjourney, lovart-flux-2-max, lovart-nano-banana-pro, lovart-ideogram-v4, lovart-agent (Lovart picks the model); videos lovart-veo-3-1, lovart-veo-3-1-fast, lovart-hailuo-2-3, lovart-kling-3-omni, lovart-wan-2-6. Lovart is prompt-driven: aspect ratio and duration are hints, not hard parameters.",
   "Use generate_excalidraw_subtitles to create Japanese SRT subtitles from an audio file (scripted mode aligns a provided script, scriptless mode transcribes) and place an SRT card on the canvas. For scriptless audio prefer the two-step flow (returnWordsOnly → proofread the transcript and decide line breaks yourself → subtitleLines): you are the proofreader — fix homophones and conversion errors without changing what was said. When a video needs BOTH silence cutting and subtitles, always silence-cut first, then generate subtitles from the cut result.",
-  "Use silence_cut_excalidraw_video to remove silences from a local video with ffmpeg (jet-cut) and insert the cut video into the canvas with cut statistics.",
+  "Use silence_cut_excalidraw_video to remove silences from a Premiere XML or local video and write a non-destructive Premiere XML under canvas/assets; it does not render video or insert a result card.",
   "Use generate_excalidraw_images_batch/generate_excalidraw_videos_batch when the user asks for many images, many videos, storyboard scenes, or batch media; prepare one jobs item per requested output and let the tool lay results out as a grid.",
-  "Generation tools REQUIRE confirmedSettings: true and reject the call otherwise (payloadPreview and silence-cut dryRun excepted). Before setting it, confirm the settings with the user via the host's AskUserQuestion/request_user_input mechanism — exactly like the BuzzAssist app — unless the user's own message already specified every one of them.",
+  "Generation tools REQUIRE confirmedSettings: true and reject the call otherwise (payloadPreview and ffmpeg-local silence-cut dryRun excepted). Before setting it, confirm the settings with the user via the host's AskUserQuestion/request_user_input mechanism — exactly like the BuzzAssist app — unless the user's own message already specified every one of them.",
   "Required image settings to confirm when missing: model, 実行先 (execution route) when the model can run on more than one of Codex(local)/Hermes(local)/BuzzAssist API/Lovart, aspect ratio, and quality. Defaults to offer as Recommended are GPT-Image-2.0(Codex), 1:1, and Auto.",
   "Required video settings to confirm when missing: model, 実行先 (execution route) when the model can run on more than one of Hermes(local)/BuzzAssist API/Lovart, aspect ratio, duration, and resolution. Defaults to offer as Recommended are Grok Imagine(Hermes), 16:9, 5 seconds, and 720p.",
   "Before generating subtitles, confirm when missing: mode (scripted needs the script text; scriptless transcribes), lineCount (1 or 2), and maxCharsPerLine. Defaults to offer as Recommended are scriptless, 2 lines, 30 chars.",
-  "Before silence-cutting, confirm when missing: model (ffmpeg-local jet-cut, or elevenlabs-scribe-v2 for AI cleanup of fillers/coughs/retakes) and for scribe the removal intensities (0/25/50/80, defaults 50/50/0). Default model to offer as Recommended is ffmpeg-local.",
+  "Before silence-cutting, confirm when missing: input type (Premiere XML preferred, or video), model (Recommended: elevenlabs-scribe-v2 for AI cleanup; ffmpeg-local only for offline threshold cuts), and for scribe the removal intensities (0/30/60/90, defaults filler 40/cough 0/retake 0). Output is Premiere XML only; do not promise a rendered video or a canvas result card.",
   "The project-common 用語辞書 (canvas/subtitle-glossary.json, editable from the SRT panel's 用語 pill) is merged into every subtitle/scribe transcription automatically.",
   "Canvas tools auto-start the local canvas server when it is not running. In Claude Code, open the canvas in the HOST'S IN-APP BROWSER instead of an external one: call preview_start with the 'canvas' config from .claude/launch.json. If preview_start reports the port is in use by another chat's server, do NOT take it over or edit ports — start the next config instead ('canvas-2', 'canvas-3', 'canvas-4'; ports 43219-43222). Every config serves the same shared project canvas, so each session gets its own in-app preview with identical content. Outside Claude Code the server opens a browser window once when no tab is connected (EXCALIDRAW_NO_AUTO_OPEN=1 disables).",
   "When an attached or selected image/video could be used in more than one way, ask one disambiguation question before generation. For video, distinguish start frame/image-to-video from style reference; do not silently put the same media into multiple payload fields.",
@@ -270,7 +270,7 @@ const SETTINGS_QUESTION_GUIDES = {
   subtitle:
     "mode (scripted aligns a provided script / scriptless transcribes), lineCount (1 or 2), and maxCharsPerLine. Recommended defaults: scripted when a script exists (otherwise scriptless), 2 lines, 30 chars.",
   silenceCut:
-    "model (ffmpeg-local jet-cut, or elevenlabs-scribe-v2 for AI cleanup of fillers/coughs/retakes) and, for scribe, the filler/cough/retake removal intensities (0-100). Recommended default: ffmpeg-local.",
+    "input type (Premiere XML preferred, or video), model (elevenlabs-scribe-v2 for AI cleanup, or ffmpeg-local for offline threshold cuts), and, for scribe, the filler/cough/retake removal intensities (0-100). Recommended default: Premiere XML input, elevenlabs-scribe-v2, filler 40 / cough 0 / retake 0.",
 };
 
 function settingsConfirmationErrorText(kind) {
@@ -1269,7 +1269,7 @@ function toolDefinitions() {
           displayWidth: { type: "number" },
           displayHeight: { type: "number" },
           customData: { type: "object" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean" },
         },
         required: ["prompt"],
@@ -1329,7 +1329,7 @@ function toolDefinitions() {
           displayWidth: { type: "number" },
           displayHeight: { type: "number" },
           customData: { type: "object" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean" },
         },
         required: ["prompt"],
@@ -1379,7 +1379,7 @@ function toolDefinitions() {
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
           focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to true." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },
         required: ["jobs"],
@@ -1430,7 +1430,7 @@ function toolDefinitions() {
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
           focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to true." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },
         required: ["jobs"],
@@ -1484,7 +1484,7 @@ function toolDefinitions() {
           anchorElementId: { type: "string", description: "Existing Excalidraw element id to place beside." },
           placement: { type: "string", enum: ["right", "left", "below", "replace", "inside"] },
           margin: { type: "number" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
           dryRun: { type: "boolean", description: "Generate the SRT without saving it to the canvas." },
         },
         additionalProperties: false,
@@ -1544,33 +1544,27 @@ function toolDefinitions() {
     {
       name: TOOL_SILENCE_CUT_VIDEO,
       title: "Silence Cut Excalidraw Video",
-      description: "Remove silences from a local video (jet cut), then insert the cut video into the canvas with cut statistics. model=ffmpeg-local runs fully offline; model=elevenlabs-scribe-v2 transcribes via BuzzAssist (requires buzzassist_login, ~1 credit/min) and additionally removes fillers, coughs, and retakes from word timestamps. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — model and, for scribe, the filler/cough/retake removal intensities. Calls without confirmedSettings=true are rejected (payloadPreview and dryRun cut-plan previews excepted). AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (or 'canvas-2'…'canvas-4').",
+      description: "Jet-cut silences and output a NON-DESTRUCTIVE Premiere Pro XML (FCP7 xmeml) saved under canvas/assets — no rendering, no quality loss, instantly importable as a cut-applied sequence. Input is a Premiere XML by default/preference, or a video file. XML input must be a single video-track sequence; cuts are applied inside each timeline clip. model=elevenlabs-scribe-v2 is the Recommended main path: it transcribes via BuzzAssist (requires buzzassist_login, ~1 credit/min) and removes fillers, coughs, and retakes from word timestamps. model=ffmpeg-local is the offline fallback with an auto-calibrated noise-floor threshold. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — input type, model, and, for scribe, the filler/cough/retake removal intensities. Calls without confirmedSettings=true are rejected (except ffmpeg-local dryRun cut-plan previews).",
       inputSchema: {
         type: "object",
         properties: {
-          videoPath: { type: "string", description: "Absolute local video path to cut." },
-          model: { type: "string", enum: ["ffmpeg-local", "elevenlabs-scribe-v2"], description: "Cut engine. Defaults to ffmpeg-local." },
+          videoPath: { type: "string", description: "Absolute local path to cut: a video file (mp4/mov/…) or a Premiere Pro XML (.xml, FCP7 xmeml with one video track)." },
+          model: { type: "string", enum: ["elevenlabs-scribe-v2", "ffmpeg-local"], description: "Cut engine. Defaults/recommended to elevenlabs-scribe-v2; use ffmpeg-local only for fully offline threshold cuts." },
           fillerRemoval: { type: "number", description: "0-100. Scribe mode only: remove Japanese fillers (えー/あのー…). 0 off, 35+ adds その/なんか, 70+ adds ていうか/やっぱり." },
           coughRemoval: { type: "number", description: "0-100. Scribe mode only: cut coughs/sneezes detected as audio events." },
           retakeRemoval: { type: "number", description: "0-100. Scribe mode only: cut retake markers (いや/違う/もう一回…); 70+ also rewinds over the flubbed phrase." },
           instructionPrompt: { type: "string", description: "Scribe mode only: natural-language bias, e.g. テンポよく (tighter) or 自然に余韻を残して (looser)." },
           glossary: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false }, description: "Scribe mode only: term corrections applied to the transcription." },
           detectSeconds: { type: "number", description: "Minimum silence length to detect. Defaults to 0.6." },
-          thresholdDb: { type: "number", description: "Silence threshold in dB (ffmpeg-local only). Defaults to -34." },
+          thresholdDb: { type: ["number", "string"], description: "Silence threshold in dB (ffmpeg-local only), or \"auto\" (default) to calibrate from the media's measured noise floor (+6dB)." },
           keepSeconds: { type: "number", description: "Silence seconds to keep around cuts. Defaults to 0.25." },
           preMarginSeconds: { type: "number", description: "Safety margin before speech. Defaults to 0.08." },
           postMarginSeconds: { type: "number", description: "Safety margin after speech. Defaults to 0.12." },
-          audioFadeSeconds: { type: "number", description: "Audio crossfade at cut points. Defaults to 0.03." },
-          fileName: { type: "string", description: "Destination filename under canvas/assets/." },
+          fileName: { type: "string", description: "Destination .xml filename under canvas/assets/." },
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
-          anchorElementId: { type: "string", description: "Existing Excalidraw element id to place beside." },
-          placement: { type: "string", enum: ["right", "left", "below", "replace", "inside"] },
-          margin: { type: "number" },
-          displayWidth: { type: "number" },
-          displayHeight: { type: "number" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and silence-cut dryRun excepted)." },
-          dryRun: { type: "boolean", description: "Preview only: return the cut plan (ranges, candidates, durations) without rendering or touching the canvas." },
+          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          dryRun: { type: "boolean", description: "Preview only: return the cut plan (ranges, candidates, durations) without writing the XML." },
         },
         required: ["videoPath"],
         additionalProperties: false,
@@ -1807,15 +1801,17 @@ async function generateExcalidrawSubtitles(args = {}) {
 }
 
 async function silenceCutExcalidrawVideo(args = {}) {
-  const videoPath = nonEmptyString(args.videoPath);
-  if (!videoPath) throw new Error("videoPath is required.");
+  const videoPath = nonEmptyString(args.videoPath) || nonEmptyString(args.inputPath);
+  if (!videoPath) throw new Error("videoPath is required (a video file or a Premiere XML).");
 
-  const outputDir = join(tmpdir(), "codex-excalidraw-silence-cut");
+  // Output is a jet-cut Premiere XML written straight into canvas/assets so
+  // it is downloadable — no canvas element is created.
+  const assetsDir = join(resolveCanvasDir(args), "assets");
   const cut = await silenceCutVideo({
     inputPath: pathResolve(videoPath),
-    outputDir,
+    outputDir: assetsDir,
     fileName: args.fileName,
-    model: args.model,
+    model: args.model || "elevenlabs-scribe-v2",
     fillerRemoval: args.fillerRemoval,
     coughRemoval: args.coughRemoval,
     retakeRemoval: args.retakeRemoval,
@@ -1826,7 +1822,6 @@ async function silenceCutExcalidrawVideo(args = {}) {
     keepSeconds: args.keepSeconds,
     preMarginSeconds: args.preMarginSeconds,
     postMarginSeconds: args.postMarginSeconds,
-    audioFadeSeconds: args.audioFadeSeconds,
     planOnly: Boolean(args.dryRun),
   });
 
@@ -1835,6 +1830,9 @@ async function silenceCutExcalidrawVideo(args = {}) {
     outputDuration: cut.outputDuration,
     cutDuration: cut.cutDuration,
     cutCount: cut.cutCount,
+    clipCount: cut.clipCount,
+    thresholdAuto: cut.thresholdAuto,
+    ...(cut.thresholdDbUsed !== undefined ? { thresholdDbUsed: cut.thresholdDbUsed } : {}),
   };
 
   if (args.dryRun) {
@@ -1848,39 +1846,15 @@ async function silenceCutExcalidrawVideo(args = {}) {
     };
   }
 
-  const placement = await insertExcalidrawVideoMedia({
-        projectDir: args.projectDir,
-        canvasDir: args.canvasDir,
-        videoPath: cut.outputPath,
-        fileName: args.fileName ?? basename(cut.outputPath),
-        anchorElementId: args.anchorElementId,
-        placement: args.placement,
-        margin: args.margin,
-        displayWidth: args.displayWidth,
-        displayHeight: args.displayHeight,
-        duration: cut.outputDuration,
-        customData: {
-          codexSilenceCutVideo: true,
-          silenceCut: stats,
-          silenceCutSourcePath: pathResolve(videoPath),
-          ...(args.customData && typeof args.customData === "object" ? args.customData : {}),
-        },
-      });
-
   return {
     ok: true,
     model: cut.model,
+    kind: "premiere-xml",
     ...stats,
     outputPath: cut.outputPath,
+    fileName: cut.fileName,
+    assetUrl: `/excalidraw-assets/${cut.fileName}`,
     ...(cut.transcription ? { transcription: cut.transcription } : {}),
-    ...(placement
-      ? {
-          elementId: placement.elementId,
-          assetFile: placement.assetFile,
-          assetUrl: placement.assetUrl,
-          bounds: placement.bounds,
-        }
-      : {}),
     dryRun: false,
   };
 }
@@ -1902,12 +1876,12 @@ async function handleToolCall(id, params) {
   const settingsGateKind = SETTINGS_CONFIRMATION_TOOLS.get(params?.name);
   if (settingsGateKind) {
     const gateArgs = params.arguments ?? {};
-    // payloadPreview never generates; silence-cut dryRun is a cheap local cut
-    // plan. Every other call (including generate/subtitle dryRun, which DO
-    // run the model) needs the user-confirmed settings attestation.
+    // payloadPreview never generates. Only ffmpeg-local silence-cut dryRun is
+    // exempt; Scribe dryRun transcribes and consumes credits, so it still
+    // needs the user-confirmed settings attestation.
     const gateExempt =
       gateArgs.payloadPreview === true ||
-      (settingsGateKind === "silenceCut" && gateArgs.dryRun === true);
+      (settingsGateKind === "silenceCut" && gateArgs.dryRun === true && gateArgs.model === "ffmpeg-local");
     if (!gateArgs.confirmedSettings && !gateExempt) {
       sendResult(id, {
         content: [{ type: "text", text: settingsConfirmationErrorText(settingsGateKind) }],
@@ -1983,7 +1957,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `Silence-cut ${result.cutCount} range(s): ${result.inputDuration.toFixed(1)}s -> ${result.outputDuration.toFixed(1)}s (${result.cutDuration.toFixed(1)}s removed)${result.dryRun ? " [dry run]" : ""}.${result.dryRun ? "" : canvasHintText()}`,
+          text: `Silence-cut ${result.cutCount} range(s): ${result.inputDuration.toFixed(1)}s -> ${result.outputDuration.toFixed(1)}s (${result.cutDuration.toFixed(1)}s removed)${result.dryRun ? " [dry run]" : ` — Premiere XML saved as ${result.fileName} (${result.assetUrl}); import it into Premiere Pro as a cut-applied sequence`}.`,
         },
       ],
       structuredContent: result,

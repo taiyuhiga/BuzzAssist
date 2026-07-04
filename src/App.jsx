@@ -110,7 +110,7 @@ const DEFAULT_FRAME_FORM = {
   subtitleScriptName: '',
   subtitleGlossary: '',
   subtitleAudio: null,
-  silenceCutModel: 'ffmpeg-local',
+  silenceCutModel: 'elevenlabs-scribe-v2',
   silenceCutInstruction: '',
   silenceCutFillerRemoval: 40,
   silenceCutCoughRemoval: 0,
@@ -119,9 +119,9 @@ const DEFAULT_FRAME_FORM = {
   silenceCutDetectSeconds: 0.6,
   silenceCutKeepSeconds: 0.25,
   silenceCutThresholdDb: -34,
+  silenceCutThresholdAuto: true,
   silenceCutPreMarginSeconds: 0.08,
   silenceCutPostMarginSeconds: 0.12,
-  silenceCutAudioFadeSeconds: 0.03,
   lovartKind: 'image',
   lovartModel: 'lovart-midjourney',
   lovartVideoModel: 'lovart-veo-3-1',
@@ -148,10 +148,17 @@ const SUBTITLE_FILLER_OPTIONS = [
 
 // Youtube-AGI SILENCE_CUT_MODEL_OPTIONS
 const SILENCE_CUT_MODEL_OPTIONS = [
-  ['ffmpeg-local', 'FFmpeg Local'],
-  ['elevenlabs-scribe-v2', 'ElevenLabs Scribe v2']
+  ['elevenlabs-scribe-v2', 'ElevenLabs Scribe v2'],
+  ['ffmpeg-local', 'FFmpeg Local']
 ]
 // AI cleanup intensity presets (オフ/弱/中/強), matching Youtube-AGI
+// ワンタップの強さプリセット（検出長さ・残す間・前後余白）
+const SILENCE_CUT_PRESETS = [
+  ['テンポ重視', { detect: 0.45, keep: 0.12, pre: 0.06, post: 0.08 }],
+  ['標準', { detect: 0.6, keep: 0.25, pre: 0.08, post: 0.12 }],
+  ['ゆったり', { detect: 0.8, keep: 0.45, pre: 0.1, post: 0.18 }]
+]
+
 const SILENCE_CUT_INTENSITY_OPTIONS = [
   [0, 'オフ'],
   [30, '弱'],
@@ -428,10 +435,22 @@ function getUploadTargetAccept(target) {
   // Subtitle sources accept video too: ffmpeg extracts the audio track
   // server-side before transcription (desktop-app behavior).
   if (target === 'subtitleAudio') return 'audio/*,video/*'
+  // Silence cut takes a Premiere XML (preferred) or a video file.
+  if (target === 'silenceCutVideo') return '.xml,application/xml,text/xml,video/*'
   const kind = getUploadTargetKind(target)
   if (kind === 'video') return 'video/*'
   if (kind === 'audio') return 'audio/*'
   return 'image/*'
+}
+
+function triggerAssetDownload(assetUrl, fileName = '') {
+  if (!assetUrl || typeof document === 'undefined') return
+  const anchor = document.createElement('a')
+  anchor.href = `${assetUrl}${assetUrl.includes('?') ? '&' : '?'}download=1`
+  if (fileName) anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 function getCanvasPickTargetFromEventTarget(target) {
@@ -548,46 +567,7 @@ function LovartGeneratorToolIcon() {
   )
 }
 
-// Real provider logos, fetched as favicons from each vendor's domain (like
-// Lovart's model list). Falls back to the local glyphs offline / on error.
-const PROVIDER_FAVICON_DOMAINS = {
-  midjourney: 'midjourney.com',
-  'nano-banana': 'deepmind.google',
-  openai: 'openai.com',
-  luma: 'lumalabs.ai',
-  flux: 'bfl.ai',
-  seedream: 'seed.bytedance.com',
-  seedance: 'seed.bytedance.com',
-  kling: 'klingai.com',
-  ideogram: 'ideogram.ai',
-  veo: 'deepmind.google',
-  gemini: 'gemini.google.com',
-  hailuo: 'hailuoai.video',
-  wan: 'wan.video',
-  vidu: 'vidu.com',
-  grok: 'x.ai',
-  codex: 'openai.com',
-  lovart: 'lovart.ai',
-  buzzassist: 'buzzassist.ai'
-}
-
 function ModelProviderIcon({ provider, size = 16 }) {
-  const [faviconFailed, setFaviconFailed] = useState(false)
-  const domain = PROVIDER_FAVICON_DOMAINS[provider]
-  if (domain && !faviconFailed) {
-    return (
-      <img
-        src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`}
-        width={size}
-        height={size}
-        alt=""
-        loading="lazy"
-        draggable={false}
-        style={{ borderRadius: 4, display: 'block' }}
-        onError={() => setFaviconFailed(true)}
-      />
-    )
-  }
   return <ModelProviderGlyph provider={provider} size={size} />
 }
 
@@ -1762,7 +1742,7 @@ function frameFormFromElement(element) {
     subtitleAudio: customData.subtitleAudioAsset && typeof customData.subtitleAudioAsset === 'object'
       ? customData.subtitleAudioAsset
       : null,
-    silenceCutModel: customData.silenceCutModel === 'elevenlabs-scribe-v2' ? 'elevenlabs-scribe-v2' : 'ffmpeg-local',
+    silenceCutModel: customData.silenceCutModel === 'ffmpeg-local' ? 'ffmpeg-local' : DEFAULT_FRAME_FORM.silenceCutModel,
     silenceCutInstruction: typeof customData.silenceCutInstruction === 'string' ? customData.silenceCutInstruction : '',
     silenceCutFillerRemoval: clamp(finiteNumberOr(customData.silenceCutFillerRemoval, DEFAULT_FRAME_FORM.silenceCutFillerRemoval), 0, 100),
     silenceCutCoughRemoval: clamp(finiteNumberOr(customData.silenceCutCoughRemoval, DEFAULT_FRAME_FORM.silenceCutCoughRemoval), 0, 100),
@@ -1775,7 +1755,7 @@ function frameFormFromElement(element) {
     silenceCutThresholdDb: clamp(finiteNumberOr(customData.silenceCutThresholdDb, DEFAULT_FRAME_FORM.silenceCutThresholdDb), -60, -20),
     silenceCutPreMarginSeconds: clamp(finiteNumberOr(customData.silenceCutPreMarginSeconds, DEFAULT_FRAME_FORM.silenceCutPreMarginSeconds), 0.05, 0.3),
     silenceCutPostMarginSeconds: clamp(finiteNumberOr(customData.silenceCutPostMarginSeconds, DEFAULT_FRAME_FORM.silenceCutPostMarginSeconds), 0.05, 0.3),
-    silenceCutAudioFadeSeconds: clamp(finiteNumberOr(customData.silenceCutAudioFadeSeconds, DEFAULT_FRAME_FORM.silenceCutAudioFadeSeconds), 0, 0.1),
+    silenceCutThresholdAuto: customData.silenceCutThresholdAuto !== false,
     lovartKind: customData.lovartKind === 'video' ? 'video' : DEFAULT_FRAME_FORM.lovartKind,
     lovartModel: typeof customData.lovartModel === 'string' && customData.lovartModel ? customData.lovartModel : DEFAULT_FRAME_FORM.lovartModel,
     lovartVideoModel: typeof customData.lovartVideoModel === 'string' && customData.lovartVideoModel ? customData.lovartVideoModel : DEFAULT_FRAME_FORM.lovartVideoModel,
@@ -1811,9 +1791,9 @@ function frameCustomDataFromForm(kind, form) {
       silenceCutDetectSeconds: form.silenceCutDetectSeconds,
       silenceCutKeepSeconds: form.silenceCutKeepSeconds,
       silenceCutThresholdDb: form.silenceCutThresholdDb,
+      silenceCutThresholdAuto: form.silenceCutThresholdAuto,
       silenceCutPreMarginSeconds: form.silenceCutPreMarginSeconds,
       silenceCutPostMarginSeconds: form.silenceCutPostMarginSeconds,
-      silenceCutAudioFadeSeconds: form.silenceCutAudioFadeSeconds,
       silenceCutVideoAsset: form.silenceCutVideo || null
     }
   }
@@ -2559,9 +2539,10 @@ export default function App() {
   const [hermesStatus, setHermesStatus] = useState(null)
   const [bulkDownloading, setBulkDownloading] = useState(false)
   const [proofreadCopied, setProofreadCopied] = useState(false)
+  const [silenceCutNotice, setSilenceCutNotice] = useState('')
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
-  const [glossaryTerms, setGlossaryTerms] = useState(null)
+  const [glossaryTerms, setGlossaryTerms] = useState([])
   const [glossarySaving, setGlossarySaving] = useState(false)
   const [glossaryStatus, setGlossaryStatus] = useState('')
   const mutateGlossaryTerms = (terms) => {
@@ -2596,6 +2577,17 @@ export default function App() {
   const [expandedVideoPlayback, setExpandedVideoPlayback] = useState(null)
   const [pendingPanelFrame, setPendingPanelFrame] = useState(null)
   const [selectedGeneratedResult, setSelectedGeneratedResult] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/subtitle-glossary')
+      .then((response) => response.json())
+      .then((payload) => setGlossaryTerms(Array.isArray(payload.terms) ? payload.terms : []))
+      .catch(() => setGlossaryTerms([]))
+    fetch('/api/lovart/auth-status')
+      .then((response) => response.json())
+      .then(setLovartAuth)
+      .catch(() => setLovartAuth({ configured: false }))
+  }, [])
   const [openMenu, setOpenMenu] = useState(null)
   const [videoFrameBtnsHovered, setVideoFrameBtnsHovered] = useState(false)
   const [utilityTrayHovered, setUtilityTrayHovered] = useState(false)
@@ -3733,6 +3725,32 @@ export default function App() {
   )
 
   const uploadAssetFile = useCallback(async (file, options = {}) => {
+    const isXmlFile = /\.xml$/i.test(file.name || '') || /^(application|text)\/xml$/i.test(file.type || '')
+    if (isXmlFile) {
+      const formData = new FormData()
+      formData.append('file', file, file.name)
+      formData.append('fileName', file.name)
+      const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
+        method: 'POST',
+        body: formData
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `Upload failed: ${response.status}`)
+      }
+      return {
+        id: crypto.randomUUID(),
+        name: file.name,
+        kind: 'xml',
+        mimeType: payload.mimeType || file.type || 'application/xml',
+        path: payload.path,
+        url: payload.url,
+        dataURL: '',
+        thumbnail: '',
+        duration: 0
+      }
+    }
+
     if (file.type.startsWith('audio/')) {
       const metadata = await readAudioMetadata(file)
       const formData = new FormData()
@@ -4012,7 +4030,10 @@ export default function App() {
     restoreGeneratorUploadFrame()
     try {
       const assets = (await Promise.all(files.map(uploadAssetFile))).filter(
-        (asset) => asset.kind === expectedKind || (target === 'subtitleAudio' && asset.kind === 'video')
+        (asset) =>
+          asset.kind === expectedKind ||
+          (target === 'subtitleAudio' && asset.kind === 'video') ||
+          (target === 'silenceCutVideo' && /\.xml$/i.test(asset.name || asset.path || ''))
       )
       for (const asset of assets) {
         addAssetToFrame(target, asset)
@@ -4652,20 +4673,12 @@ export default function App() {
               quality: savedForm.quality,
               imageSize: savedForm.imageSize,
               referenceImagePaths: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind !== 'video')
+                .filter((asset) => asset.kind === 'image')
                 .map((asset) => asset.path)
                 .filter(Boolean),
               referenceImages: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind !== 'video')
+                .filter((asset) => asset.kind === 'image')
                 .map((asset) => asset.dataURL || asset.url)
-                .filter(Boolean),
-              referenceVideoPaths: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind === 'video')
-                .map((asset) => asset.path)
-                .filter(Boolean),
-              referenceVideos: normalizeAssetList(savedForm.imageReferences)
-                .filter((asset) => asset.kind === 'video')
-                .map((asset) => asset.url || asset.dataURL)
                 .filter(Boolean),
               selectCreated: true,
               anchorElementId: generationAnchorId,
@@ -4745,9 +4758,8 @@ export default function App() {
     }
   }, [api, applyRemoteScene, capabilities, ensureBuzzAssistLoggedIn, frameForm, generatingFrameIds, insertGeneratorFrame, refreshOverlayStates, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, selectedGeneratedResult, updateActiveFrameElement])
 
-  // Generation for the utility frames (SRT subtitles / silence cut). The server
-  // replaces the anchor frame with the result card/video and broadcasts the new
-  // canvas, mirroring the image/video generation flow.
+  // Generation for utility frames. SRT replaces the frame with an SRT card;
+  // silence cut keeps the frame selected and downloads a Premiere XML.
   const runUtilityGeneration = useCallback(async () => {
     if (!api) return
     const anchorElementId = activeFrameIdRef.current
@@ -4769,7 +4781,7 @@ export default function App() {
         return
       }
     } else if (!savedForm.silenceCutVideo?.path) {
-      setGenerationError('無音カットする動画を添付してください。')
+      setGenerationError('Premiere XMLまたは動画を添付してください。')
       return
     }
 
@@ -4779,18 +4791,14 @@ export default function App() {
     updateActiveFrameElement(savedForm)
     setOpenMenu(null)
     setGenerationError('')
+    setSilenceCutNotice('')
     setGeneratingFrameIds((current) => new Set(current).add(anchorElementId))
     setPendingPanelFrame(null)
     setSelectedGeneratedResult(null)
-    activeFrameIdRef.current = ''
-    setActiveFrameId('')
-    suppressNextChangeRef.current = true
-    window.setTimeout(() => {
-      api.updateScene({
-        appState: { selectedElementIds: {} },
-        captureUpdate: CaptureUpdateAction.NEVER
-      })
-    }, 0)
+    activeFrameIdRef.current = anchorElementId
+    lastFocusedFrameIdRef.current = anchorElementId
+    setActiveFrameId(anchorElementId)
+    setActiveFrameKind(kind)
 
     try {
       await saveCanvas(latestSceneRef.current)
@@ -4821,17 +4829,11 @@ export default function App() {
               coughRemoval: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutCoughRemoval : 0,
               retakeRemoval: savedForm.silenceCutModel === 'elevenlabs-scribe-v2' ? savedForm.silenceCutRetakeRemoval : 0,
               detectSeconds: savedForm.silenceCutDetectSeconds,
-              thresholdDb: savedForm.silenceCutThresholdDb,
+              thresholdDb: savedForm.silenceCutThresholdAuto ? 'auto' : savedForm.silenceCutThresholdDb,
               keepSeconds: savedForm.silenceCutKeepSeconds,
               preMarginSeconds: savedForm.silenceCutPreMarginSeconds,
               postMarginSeconds: savedForm.silenceCutPostMarginSeconds,
-              audioFadeSeconds: savedForm.silenceCutAudioFadeSeconds,
-              anchorElementId,
-              placement: 'replace',
-              replaceAnchor: true,
-              displayWidth: anchorElement.width,
-              displayHeight: anchorElement.height,
-              fileName: `${(savedForm.silenceCutVideo.name || 'video').replace(/\.[^.]+$/, '')}-cut.mp4`
+              fileName: `${(savedForm.silenceCutVideo.name || 'timeline').replace(/\.[^.]+$/, '')}-jetcut.xml`
             }
 
       const response = await fetch(endpoint, {
@@ -4842,6 +4844,32 @@ export default function App() {
       const payload = await response.json().catch(() => ({}))
       if (!response.ok || payload.error) {
         throw new Error(payload.error || `Generation failed: ${response.status}`)
+      }
+      if (kind === 'silenceCut') {
+        // The jet-cut Premiere XML is saved under canvas/assets — no canvas
+        // element. Keep the generator frame (settings survive for re-runs),
+        // surface the stats, and hand the file to the browser.
+        const formatClock = (seconds) => {
+          const total = Math.max(0, Math.round(Number(seconds) || 0))
+          return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+        }
+        setSilenceCutNotice(
+          `${formatClock(payload.inputDuration)} → ${formatClock(payload.outputDuration)}（−${formatClock(payload.cutDuration)}・${payload.cutCount}箇所）${payload.fileName} を書き出しました`
+        )
+        triggerAssetDownload(payload.assetUrl, payload.fileName || 'jetcut.xml')
+        activeFrameIdRef.current = anchorElementId
+        lastFocusedFrameIdRef.current = anchorElementId
+        setActiveFrameId(anchorElementId)
+        setActiveFrameKind(kind)
+        setFrameForm(savedForm)
+        suppressNextChangeRef.current = true
+        window.setTimeout(() => {
+          api.updateScene({
+            appState: { selectedElementIds: { [anchorElementId]: true } },
+            captureUpdate: CaptureUpdateAction.NEVER
+          })
+        }, 0)
+        return
       }
       const canvasResponse = await fetch(CANVAS_ENDPOINT)
       if (canvasResponse.ok) {
@@ -5157,24 +5185,6 @@ export default function App() {
           <button
             type="button"
             className="lovart-ai-button"
-            aria-label="SRTジェネレーター"
-            data-lovart-tooltip="SRTジェネレーター"
-            data-lovart-generator-kind="subtitle"
-            onPointerDown={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-            }}
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              createGeneratorFrame('subtitle')
-            }}
-          >
-            <SrtGeneratorToolIcon />
-          </button>
-          <button
-            type="button"
-            className="lovart-ai-button"
             aria-label="無音カットジェネレーター"
             data-lovart-tooltip="無音カットジェネレーター"
             data-lovart-generator-kind="silenceCut"
@@ -5189,6 +5199,24 @@ export default function App() {
             }}
           >
             <SilenceCutGeneratorToolIcon />
+          </button>
+          <button
+            type="button"
+            className="lovart-ai-button"
+            aria-label="SRTジェネレーター"
+            data-lovart-tooltip="SRTジェネレーター"
+            data-lovart-generator-kind="subtitle"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              createGeneratorFrame('subtitle')
+            }}
+          >
+            <SrtGeneratorToolIcon />
           </button>
         </div>
       ) : null}
@@ -5390,8 +5418,8 @@ export default function App() {
       {(() => {
         // Lovart-style selection toolbar: click or marquee-select any media
         // (image / video / SRT card) and a floating toolbar appears above the
-        // selection bounds with a download button — single item downloads
-        // directly, multiple items download as one ZIP.
+        // selection bounds with a download button. Multiple assets download
+        // directly instead of building a ZIP, so large videos don't block the UI.
         const selectedMedia = [
           ...selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl),
           ...subtitlePreviewOverlays
@@ -5403,36 +5431,15 @@ export default function App() {
         const boundsRight = Math.max(...selectedMedia.map((overlay) => overlay.left + overlay.width))
         const boundsTop = Math.min(...selectedMedia.map((overlay) => overlay.top))
         const single = selectedMedia.length === 1
-        const downloadZip = async () => {
-          const files = selectedMedia
-            .map((overlay) => overlay.assetUrl.split('/').pop().split('?')[0])
-            .filter(Boolean)
-          if (files.length === 0) return
+        const downloadSelectedMedia = () => {
           setBulkDownloading(true)
-          try {
-            const response = await fetch('/api/assets/archive', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ files })
-            })
-            if (!response.ok) {
-              const payload = await response.json().catch(() => ({}))
-              throw new Error(payload.error || `Download failed: ${response.status}`)
-            }
-            const blob = await response.blob()
-            const url = URL.createObjectURL(blob)
-            const anchor = document.createElement('a')
-            anchor.href = url
-            anchor.download = `excalidraw-assets-${new Date().toISOString().slice(0, 10)}.zip`
-            document.body.appendChild(anchor)
-            anchor.click()
-            anchor.remove()
-            window.setTimeout(() => URL.revokeObjectURL(url), 10000)
-          } catch (error) {
-            setGenerationError(error.message)
-          } finally {
-            setBulkDownloading(false)
-          }
+          selectedMedia.forEach((overlay, index) => {
+            window.setTimeout(() => {
+              const fileName = decodeURIComponent(overlay.assetUrl.split('/').pop().split('?')[0] || '')
+              triggerAssetDownload(overlay.assetUrl, fileName)
+            }, index * 70)
+          })
+          window.setTimeout(() => setBulkDownloading(false), Math.min(1500, 160 + selectedMedia.length * 70))
         }
         return (
           <div
@@ -5480,8 +5487,8 @@ export default function App() {
                 type="button"
                 className="lovart-selection-toolbar-btn"
                 disabled={bulkDownloading}
-                title={bulkDownloading ? '準備中…' : `${selectedMedia.length}件をZIPでダウンロード`}
-                onClick={downloadZip}
+                title={bulkDownloading ? '開始中…' : `${selectedMedia.length}件をダウンロード`}
+                onClick={downloadSelectedMedia}
               >
                 <DownloadIcon size={15} />
                 <span className="lovart-selection-toolbar-count">{bulkDownloading ? '…' : selectedMedia.length}</span>
@@ -5910,11 +5917,13 @@ export default function App() {
                           ) : null}
                         </div>
                         <div className="lovart-key-substatus">
-                          {lovartAuth?.configured
+                          {lovartAuth === null
+                            ? '確認中...'
+                            : lovartAuth?.configured
                             ? `接続済み: ${lovartAuth.accessKeyPreview ?? ''}`
                             : '未設定（OpenClaw の ak_/sk_ を入力）'}
                         </div>
-                        {!lovartAuth?.configured || lovartKeyEditing ? (
+                        {lovartAuth !== null && (!lovartAuth?.configured || lovartKeyEditing) ? (
                           <>
                             <input ref={lovartAccessKeyInputRef} type="password" placeholder="ak_..." autoComplete="off" />
                             <input ref={lovartSecretKeyInputRef} type="password" placeholder="sk_..." autoComplete="off" />
@@ -6274,6 +6283,7 @@ export default function App() {
       {showPromptPanel && (activeFrameKind === 'subtitle' || activeFrameKind === 'silenceCut') ? (() => {
         const isSilencePanel = activeFrameKind === 'silenceCut'
         const primaryAsset = isSilencePanel ? frameForm.silenceCutVideo : frameForm.subtitleAudio
+        const primaryIsXml = isSilencePanel && /\.xml$/i.test(primaryAsset?.name || primaryAsset?.path || '')
         const hasScriptFile = Boolean(frameForm.subtitleScriptText.trim())
         const scriptSlotDisabled = frameForm.subtitleMode !== 'scripted'
         const trayOpen =
@@ -6370,11 +6380,16 @@ export default function App() {
                     <button
                       type="button"
                       data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
-                      className={`lovart-utility-asset-card${isSilencePanel ? ' video' : ' audio'}`}
-                      title={primaryAsset.name || (isSilencePanel ? '動画を添付' : '音声・動画を添付')}
+                      className={`lovart-utility-asset-card${primaryIsXml ? ' script' : isSilencePanel ? ' video' : ' audio'}`}
+                      title={primaryAsset.name || (isSilencePanel ? 'XMLか動画を添付' : '音声・動画を添付')}
                       onClick={openPrimaryPicker}
                     >
-                      {isSilencePanel ? (
+                      {primaryIsXml ? (
+                        <>
+                          <ScriptFileIcon size={22} />
+                          <span className="lovart-utility-card-label">XML</span>
+                        </>
+                      ) : isSilencePanel ? (
                         <>
                           {isRenderableVideoPosterDataURL(primaryAsset.thumbnail) ? (
                             <img className="lovart-utility-card-thumb" src={primaryAsset.thumbnail} alt={primaryAsset.name || 'video'} />
@@ -6408,11 +6423,11 @@ export default function App() {
                     type="button"
                     data-lovart-trigger={isSilencePanel ? 'silence-cut-video' : 'subtitle-audio'}
                     className="lovart-utility-tilt-card primary"
-                    title={isSilencePanel ? '動画を添付' : '音声・動画を添付'}
+                    title={isSilencePanel ? 'XMLか動画を添付' : '音声・動画を添付'}
                     onClick={openPrimaryPicker}
                   >
                     <span className="lovart-add-plus">+</span>
-                    {trayOpen ? <span className="lovart-utility-card-hint">{isSilencePanel ? '動画' : '音声'}</span> : null}
+                    {trayOpen ? <span className="lovart-utility-card-hint">{isSilencePanel ? 'XML/動画' : '音声'}</span> : null}
                   </button>
                 )}
               </div>
@@ -6466,6 +6481,9 @@ export default function App() {
             </div>
           </div>
           {generationError ? <div className="lovart-error">{generationError}</div> : null}
+          {isSilencePanel && silenceCutNotice && !generationError ? (
+            <div className="lovart-notice">{silenceCutNotice}</div>
+          ) : null}
           <div className="lovart-ai-bottom">
             <div className="lovart-ai-left">
               {!isSilencePanel ? (
@@ -6514,9 +6532,7 @@ export default function App() {
                       </div>
                       <div className="lovart-glossary-desc">音声認識の表記ゆれを、SRT生成時に統一します。</div>
                       <div className="lovart-glossary-rows">
-                        {glossaryTerms === null ? (
-                          <div className="lovart-glossary-empty">読み込み中...</div>
-                        ) : glossaryTerms.length === 0 ? (
+                        {glossaryTerms.length === 0 ? (
                           <div className="lovart-glossary-empty">まだ用語はありません。</div>
                         ) : (
                           glossaryTerms.map((term) => (
@@ -6546,7 +6562,7 @@ export default function App() {
                         <button
                           type="button"
                           className="lovart-glossary-save"
-                          disabled={glossarySaving || glossaryTerms === null}
+                          disabled={glossarySaving}
                           onClick={saveGlossaryTerms}
                         >
                           {glossarySaving ? '保存中...' : '保存'}
@@ -6565,7 +6581,7 @@ export default function App() {
                 >
                   <span>
                     {isSilencePanel
-                      ? SILENCE_CUT_MODEL_OPTIONS.find(([value]) => value === frameForm.silenceCutModel)?.[1] ?? 'FFmpeg Local'
+                      ? SILENCE_CUT_MODEL_OPTIONS.find(([value]) => value === frameForm.silenceCutModel)?.[1] ?? 'ElevenLabs Scribe v2'
                       : frameForm.subtitleMode === 'scripted' ? 'ElevenLabs Forced Alignment' : 'ElevenLabs Scribe v2'}
                   </span>
                   <ChevronIcon />
@@ -6607,7 +6623,7 @@ export default function App() {
                 >
                   <span>
                     {isSilencePanel
-                      ? `無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・残す ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`
+                      ? `無音 ${formatSilenceCutSecondsLabel(frameForm.silenceCutDetectSeconds)}以上・間 ${formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}`
                       : `${frameForm.subtitleMaxChars}字・${frameForm.subtitleLineCount}行`}
                   </span>
                   <ChevronIcon />
@@ -6711,6 +6727,26 @@ export default function App() {
                 ) : null}
                 {openMenu === 'utility-settings' && isSilencePanel ? (
                   <div className="lovart-menu wide lovart-video-settings lovart-utility-settings lovart-utility-pop" data-lovart-menu="silence-cut-settings">
+                    <div className="lovart-menu-section-title">プリセット</div>
+                    <div className="lovart-choice-row silence-presets">
+                      {SILENCE_CUT_PRESETS.map(([label, preset]) => (
+                        <button
+                          type="button"
+                          key={label}
+                          onClick={() =>
+                            patchFrameForm({
+                              silenceCutDetectSeconds: preset.detect,
+                              silenceCutKeepSeconds: preset.keep,
+                              silenceCutPreMarginSeconds: preset.pre,
+                              silenceCutPostMarginSeconds: preset.post,
+                              silenceCutThresholdAuto: true
+                            })
+                          }
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                     <div className="lovart-menu-section-title">カットの強さ</div>
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
@@ -6731,7 +6767,7 @@ export default function App() {
                     />
                     <div className="lovart-setting-row">
                       <div className="lovart-setting-label">
-                        <div className="lovart-menu-header">残す間</div>
+                        <div className="lovart-menu-header">カット後に残す間</div>
                         <span className="lovart-info-icon" data-lovart-tooltip="カットした箇所に残す間の長さです。長いほどゆったりした仕上がりになります。">i</span>
                       </div>
                       <span>{formatSilenceCutSecondsLabel(frameForm.silenceCutKeepSeconds)}</span>
@@ -6747,7 +6783,10 @@ export default function App() {
                       onChange={(event) => updateFrameForm('silenceCutKeepSeconds', Number(event.target.value))}
                     />
                     <div className="lovart-menu-section">
-                      <div className="lovart-menu-section-title">AIクリーンアップ</div>
+                      <div className="lovart-menu-section-title">AIクリーンアップ（Scribe v2のみ）</div>
+                      {frameForm.silenceCutModel !== 'elevenlabs-scribe-v2' ? (
+                        <div className="lovart-disabled-hint">モデルをElevenLabs Scribe v2にすると使えます。</div>
+                      ) : null}
                       {[
                         ['silenceCutFillerRemoval', 'フィラー削除', '「えー」「あの」などのつなぎ言葉をAIが検出して削除します。'],
                         ['silenceCutCoughRemoval', '咳などの不要音', '咳払いやリップノイズなどの不要音をAIが検出して削除します。'],
@@ -6793,7 +6832,16 @@ export default function App() {
                               <div className="lovart-menu-header">無音判定の音量</div>
                               <span className="lovart-info-icon" data-lovart-tooltip="マイクや部屋に合わせる校正値です。喋りの途中で切れるときは下げ、無音が残るときは上げてください。">i</span>
                             </div>
-                            <span>{Math.round(frameForm.silenceCutThresholdDb)}dB</span>
+                            <div className="lovart-threshold-value">
+                              <button
+                                type="button"
+                                className={frameForm.silenceCutThresholdAuto ? 'is-selected' : ''}
+                                onClick={() => updateFrameForm('silenceCutThresholdAuto', true)}
+                              >
+                                自動
+                              </button>
+                              <span>{frameForm.silenceCutThresholdAuto ? 'ノイズ床+6dB' : `${Math.round(frameForm.silenceCutThresholdDb)}dB`}</span>
+                            </div>
                           </div>
                           <input
                             type="range"
@@ -6803,11 +6851,15 @@ export default function App() {
                             className="lovart-duration-slider"
                             value={frameForm.silenceCutThresholdDb}
                             style={sliderTrackStyle(frameForm.silenceCutThresholdDb, -60, -20)}
-                            onChange={(event) => updateFrameForm('silenceCutThresholdDb', Number(event.target.value))}
+                            onChange={(event) =>
+                              patchFrameForm({
+                                silenceCutThresholdDb: Number(event.target.value),
+                                silenceCutThresholdAuto: false
+                              })
+                            }
                           />
                           {renderSilenceStepper('カット前の余白', 'silenceCutPreMarginSeconds', 0.05, 0.3, 0.01)}
                           {renderSilenceStepper('カット後の余白', 'silenceCutPostMarginSeconds', 0.05, 0.3, 0.01)}
-                          {renderSilenceStepper('音声のつなぎ', 'silenceCutAudioFadeSeconds', 0, 0.1, 0.01)}
                         </>
                       ) : null}
                     </div>

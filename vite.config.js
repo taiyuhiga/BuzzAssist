@@ -34,7 +34,8 @@ const mimeTypes = new Map([
   ['.m4v', 'video/mp4'],
   ['.mov', 'video/quicktime'],
   ['.mp4', 'video/mp4'],
-  ['.webm', 'video/webm']
+  ['.webm', 'video/webm'],
+  ['.xml', 'application/xml']
 ])
 
 const canvasEventClients = new Set()
@@ -1350,11 +1351,13 @@ function canvasStoragePlugin() {
             return
           }
           const body = JSON.parse(await readRequestBody(req))
+          // Output is a non-destructive Premiere XML written into
+          // canvas/assets (downloadable) — no canvas element is created.
           const cut = await silenceCutVideo({
             inputPath: body.videoPath,
-            outputDir: join(tmpdir(), 'codex-excalidraw-silence-cut'),
+            outputDir: canvasAssetsDir,
             fileName: body.fileName,
-            model: body.model,
+            model: body.model || 'elevenlabs-scribe-v2',
             fillerRemoval: body.fillerRemoval,
             coughRemoval: body.coughRemoval,
             retakeRemoval: body.retakeRemoval,
@@ -1367,34 +1370,21 @@ function canvasStoragePlugin() {
             thresholdDb: body.thresholdDb,
             keepSeconds: body.keepSeconds,
             preMarginSeconds: body.preMarginSeconds,
-            postMarginSeconds: body.postMarginSeconds,
-            audioFadeSeconds: body.audioFadeSeconds
+            postMarginSeconds: body.postMarginSeconds
           })
-          const stats = {
+          sendJson(res, 200, {
+            ok: true,
+            kind: 'premiere-xml',
             inputDuration: cut.inputDuration,
             outputDuration: cut.outputDuration,
             cutDuration: cut.cutDuration,
-            cutCount: cut.cutCount
-          }
-          const placement = await insertExcalidrawVideo({
-            canvasDir,
-            videoPath: cut.outputPath,
-            fileName: body.fileName,
-            anchorElementId: body.anchorElementId,
-            placement: body.placement,
-            margin: body.margin,
-            displayWidth: body.displayWidth,
-            displayHeight: body.displayHeight,
-            duration: cut.outputDuration,
-            customData: {
-              codexSilenceCutVideo: true,
-              silenceCut: stats,
-              silenceCutSourcePath: body.videoPath,
-              ...(body.customData && typeof body.customData === 'object' ? body.customData : {})
-            }
+            cutCount: cut.cutCount,
+            clipCount: cut.clipCount,
+            thresholdAuto: cut.thresholdAuto,
+            thresholdDbUsed: cut.thresholdDbUsed,
+            fileName: cut.fileName,
+            assetUrl: `/excalidraw-assets/${cut.fileName}`
           })
-          sendJson(res, 200, { ok: true, kind: 'silence-cut', ...stats, ...placement })
-          broadcastCanvasChanged([canvasFile, placement.assetFile])
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

@@ -1230,6 +1230,16 @@ body {
   width: 88px;
 }
 
+.lovart-menu .lovart-choice-row.silence-presets {
+  padding: 0 0 10px;
+}
+
+.lovart-menu .lovart-choice-row.silence-presets button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 8px;
+}
+
 .lovart-menu .lovart-choice-row button.is-selected {
   color: #7c3aed;
   background: #f3f0ff;
@@ -2066,6 +2076,40 @@ body {
     sans-serif;
 }
 
+.lovart-disabled-hint {
+  margin: -2px 0 6px;
+  color: #999999;
+  font: 500 11px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-threshold-value {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: #666666;
+  font: 600 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-menu .lovart-threshold-value button {
+  width: auto;
+  height: 24px;
+  padding: 0 8px;
+  color: #666666;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font: 600 11px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lovart-menu .lovart-threshold-value button.is-selected {
+  color: #7c3aed;
+  background: #f3f0ff;
+  border-color: #7c3aed;
+}
+
 .lovart-menu-section {
   margin-top: 12px;
   padding-top: 10px;
@@ -2104,7 +2148,7 @@ body {
   cursor: default;
 }
 
-/* Advanced margins/fade: −/＋ steppers (desktop parity) */
+/* Advanced silence-cut margins: -/+ steppers (desktop parity) */
 .lovart-stepper {
   display: flex;
   flex-shrink: 0;

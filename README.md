@@ -85,7 +85,7 @@ Local tools include both official-compatible diagram tools and media tools:
 - `generate_excalidraw_images_batch`: creates image generator frames first, then fills each frame with generated results as they finish
 - `generate_excalidraw_videos_batch`: creates video generator frames first, then fills each frame with generated video media as results finish
 - `generate_excalidraw_subtitles`: generates Japanese SRT subtitles from an audio file via BuzzAssist cloud (ElevenLabs forced alignment / Scribe v2), saves the SRT under `canvas/assets/`, and places an SRT card on the canvas
-- `silence_cut_excalidraw_video`: removes silences from a local video with ffmpeg (jet cut) and inserts the cut video with cut statistics
+- `silence_cut_excalidraw_video`: removes silences from a Premiere XML or local video and writes a downloadable non-destructive Premiere XML under `canvas/assets/` (no rendered video/result card)
 - `buzzassist_login`: browser sign-in to BuzzAssist for cloud models and cloud subtitles (token saved to `~/.buzzassist/excalidraw-media-auth.json`)
 - `buzzassist_auth_status`: reports the current BuzzAssist sign-in state (warns when the token expires within 3 days)
 
