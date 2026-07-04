@@ -1760,7 +1760,11 @@ body {
 
 .lovart-utility-tray-wrap .lovart-ai-prompt {
   box-sizing: border-box;
-  min-height: 80px;
+
+  /* Closed height (80px text + 60px card-peek zone) equals the open tray
+     height, so hovering the cards never grows the panel downward. */
+  height: 140px;
+  min-height: 140px;
   padding-bottom: 60px;
   resize: none;
 }
@@ -1977,20 +1981,28 @@ body {
   border-color: #dddddd;
 }
 
-/* Settings menu pops from the panel's bottom-right corner (desktop parity) */
+/* Settings menu pops from the prompt area's bottom-right corner (desktop
+   parity) */
 .lovart-menu-wrap.lovart-utility-settings-anchor {
   position: static;
+  flex-shrink: 0;
+}
+
+/* Short pills (用語, settings label) must never collapse; only the model pill
+   ellipsizes when the bar runs out of room. */
+.lovart-utility-panel .lovart-ai-left .lovart-glossary-wrap {
+  flex-shrink: 0;
 }
 
 .lovart-menu.lovart-utility-pop {
   top: auto;
 
-  /* Anchored to .lovart-ai-bottom (position: relative); these offsets place the
-     menu 15px past the panel's outer right edge and 1px above its outer bottom,
-     exactly where the desktop app's bottom-0/right--16px (vs the panel root)
-     menu lands. */
-  right: -30px;
-  bottom: -10px;
+  /* Anchored to .lovart-ai-bottom (position: relative). The desktop app pins
+     this menu to the prompt area's bottom-right corner (bottom: 0 / right:
+     -16px inside the prompt wrapper), so it grows upward and never covers the
+     bottom bar; the bar starts 6px below the prompt area. */
+  right: -16px;
+  bottom: calc(100% + 6px);
   left: auto;
   z-index: 100;
   min-width: 304px;

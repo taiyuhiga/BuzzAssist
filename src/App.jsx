@@ -1274,7 +1274,7 @@ function getPanelPlacementFromViewportTarget(target, kind = 'image') {
   const panelWidth = isVideo
     ? Math.min(GENERATOR_PANEL_VIDEO_WIDTH, maxPanelWidth)
     : kind === 'subtitle' || kind === 'silenceCut'
-      ? Math.min(500, maxPanelWidth)
+      ? Math.min(clamp(Math.round(frameViewportWidth * 0.9), 420, 560), maxPanelWidth)
       : Math.min(clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH), maxPanelWidth)
   const rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
   const rawTop = Math.round((Number(target?.top) || 0) + frameViewportHeight + 4)
@@ -6431,7 +6431,7 @@ export default function App() {
                 </div>
               ) : null}
               {!isSilencePanel ? (
-                <div className="lovart-menu-wrap">
+                <div className="lovart-menu-wrap lovart-glossary-wrap">
                   <button
                     type="button"
                     className={`lovart-pill${openMenu === 'glossary' ? ' tooltip-hidden' : ''}`}
