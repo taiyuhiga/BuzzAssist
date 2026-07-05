@@ -2787,6 +2787,60 @@ export default function App() {
   const [hermesStatus, setHermesStatus] = useState(null)
   const [bulkDownloading, setBulkDownloading] = useState(false)
   const [proofreadCopied, setProofreadCopied] = useState(false)
+  const [chatSendMenuOpen, setChatSendMenuOpen] = useState(false)
+  const [chatSendStatus, setChatSendStatus] = useState('')
+
+  // Bridge to the local Claude Code / Codex app. The clipboard must be
+  // written from the browser (the dev server can live outside the user's
+  // pasteboard session); the server then activates the app and pastes+sends
+  // via System Events.
+  const sendToChatApp = useCallback(async ({ app, text, assetUrls }) => {
+    setChatSendStatus('sending')
+    try {
+      // Step 1: resolve asset URLs to absolute paths server-side.
+      const resolveResponse = await fetch('/api/chat/send', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ app: '', text, assetUrls })
+      })
+      const resolved = await resolveResponse.json().catch(() => ({}))
+      if (!resolveResponse.ok) throw new Error(resolved.error || `送信に失敗しました (${resolveResponse.status})`)
+      const message = resolved.message || text
+      // Step 2: put the message on the user-session clipboard from the page.
+      let clipboardReady = false
+      try {
+        await navigator.clipboard.writeText(message)
+        clipboardReady = true
+      } catch {
+        // Fall back to the server's AppleScript clipboard attempt.
+      }
+      if (!app) {
+        setChatSendStatus('copied')
+        window.setTimeout(() => setChatSendStatus(''), 2600)
+        return
+      }
+      // Step 3: activate the chat app and paste + Enter.
+      const response = await fetch('/api/chat/send', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ app, text: message, clipboardReady })
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `送信に失敗しました (${response.status})`)
+      if (payload.sent) {
+        setChatSendStatus('sent')
+      } else if (payload.copied) {
+        setChatSendStatus(payload.error ? 'copied-fallback' : 'copied')
+      } else {
+        setChatSendStatus('error')
+      }
+      if (payload.error) console.warn('chat send fallback:', payload.error)
+    } catch (error) {
+      console.warn('chat send failed:', error)
+      setChatSendStatus('error')
+    }
+    window.setTimeout(() => setChatSendStatus(''), 2600)
+  }, [])
   const [silenceCutNotice, setSilenceCutNotice] = useState('')
   // Project-common 用語辞書 (canvas/subtitle-glossary.json), edited from the
   // SRT panel's 用語 pill and merged server-side into every transcription.
@@ -5798,6 +5852,50 @@ export default function App() {
                 <span className="lovart-selection-toolbar-count">{proofreadCopied ? 'コピー済み' : '校正'}</span>
               </button>
             ) : null}
+            <div className="lovart-selection-chat-wrap">
+              <button
+                type="button"
+                className="lovart-selection-toolbar-btn"
+                title="Claude Code / Codex のチャットに添付して送信"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setChatSendMenuOpen((current) => !current)
+                }}
+              >
+                <span className="lovart-selection-toolbar-count">
+                  {chatSendStatus === 'sending'
+                    ? '送信中…'
+                    : chatSendStatus === 'sent'
+                      ? '送信済み'
+                      : chatSendStatus === 'copied' || chatSendStatus === 'copied-fallback'
+                        ? 'コピー済み'
+                        : chatSendStatus === 'error'
+                          ? '失敗'
+                          : 'チャットへ'}
+                </span>
+              </button>
+              {chatSendMenuOpen ? (
+                <div className="lovart-menu lovart-selection-chat-menu">
+                  {[['claude', 'Claude Code に送信'], ['codex', 'Codex に送信'], ['', 'パスをコピーのみ']].map(([app, label]) => (
+                    <button
+                      type="button"
+                      key={app || 'copy'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setChatSendMenuOpen(false)
+                        sendToChatApp({
+                          app,
+                          text: 'キャンバスで選択したファイルを添付します。',
+                          assetUrls: selectedMedia.map((item) => item.assetUrl)
+                        })
+                      }}
+                    >
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             {single ? (
               <button
                 type="button"
@@ -6292,18 +6390,32 @@ export default function App() {
                             ? 'Hermes は未ログインです（X の OAuth が必要）'
                             : 'Hermes Agent が未インストールです'}
                         </div>
-                        <button
-                          type="button"
-                          className="lovart-key-save"
-                          onClick={() => {
-                            navigator.clipboard?.writeText(
-                              'Hermes Agent で Grok Imagine を使えるようにセットアップして。excalidraw MCP の setup_hermes_grok ツールを実行して、必要なら hermes auth add xai-oauth のブラウザOAuthを完了させて。'
-                            ).catch(() => {})
-                          }}
-                        >
-                          AIエージェント用セットアッププロンプトをコピー
-                        </button>
-                        <div className="lovart-key-hint">Claude Code / Codex に貼り付けると setup_hermes_grok が自動でセットアップします</div>
+                        <div className="lovart-key-send-row">
+                          {[['claude', 'Claude Code に依頼'], ['codex', 'Codex に依頼']].map(([app, label]) => (
+                            <button
+                              type="button"
+                              key={app}
+                              className="lovart-key-save"
+                              onClick={() => {
+                                sendToChatApp({
+                                  app,
+                                  text: 'Hermes Agent で Grok Imagine を使えるようにセットアップして。excalidraw MCP の setup_hermes_grok ツールを実行して、必要なら hermes auth add xai-oauth のブラウザOAuthを完了させて。'
+                                })
+                              }}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="lovart-key-hint">
+                          {chatSendStatus === 'sent'
+                            ? '送信しました — チャット側でセットアップが始まります'
+                            : chatSendStatus === 'copied-fallback'
+                              ? '自動送信できなかったのでコピーしました。チャットに貼り付けてください'
+                              : chatSendStatus === 'sending'
+                                ? '送信中…'
+                                : 'ワンクリックでチャットに依頼文を送信して setup_hermes_grok を実行させます'}
+                        </div>
                       </div>
                     ) : null}
                   </div>

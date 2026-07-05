@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { createReadStream, createWriteStream } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -1304,6 +1305,101 @@ function canvasStoragePlugin() {
           sendJson(res, 200, await getHermesStatus())
         } catch (error) {
           sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      // Send a message to a local AI chat app (Claude Code desktop / Codex).
+      // The browser canvas cannot reach those apps, so the dev server bridges:
+      // copy the text to the clipboard, activate the app, then paste + Enter
+      // via System Events. If keystrokes are blocked (no Accessibility
+      // permission) the text is still on the clipboard for a manual paste.
+      server.middlewares.use('/api/chat/send', async (req, res) => {
+        // osascript can hang forever from this context while macOS waits on a
+        // consent dialog that never shows — always race against a timeout.
+        const runOsascript = (script, timeoutMs = 8000) => new Promise((resolveOsa) => {
+          const child = spawn('osascript', ['-e', script])
+          let stderr = ''
+          let settled = false
+          const finish = (result) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolveOsa(result)
+          }
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL')
+            finish({ ok: false, error: 'オートメーションが応答しません（権限未許可の可能性）' })
+          }, timeoutMs)
+          child.stderr.on('data', (chunk) => { stderr += chunk })
+          child.on('error', (error) => finish({ ok: false, error: error.message }))
+          child.on('close', (code) => finish(code === 0 ? { ok: true } : { ok: false, error: stderr.trim() }))
+        })
+        try {
+          if (req.method === 'GET') {
+            // Bridge health: can this server drive the user's GUI session?
+            const probe = await runOsascript('tell application "System Events" to count processes', 3000)
+            sendJson(res, 200, { automation: probe.ok, error: probe.ok ? undefined : probe.error })
+            return
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405
+            res.setHeader('allow', 'GET, POST')
+            res.end()
+            return
+          }
+          const body = JSON.parse(await readRequestBody(req))
+          const appName = body.app === 'codex' ? 'Codex' : body.app === 'claude' ? 'Claude' : ''
+          const note = typeof body.text === 'string' ? body.text.trim() : ''
+          const assetUrls = Array.isArray(body.assetUrls) ? body.assetUrls : []
+          const assetPaths = assetUrls
+            .map((url) => {
+              try {
+                return localAssetFilePathFromUrl(new URL(String(url), 'http://127.0.0.1').pathname)
+              } catch {
+                return null
+              }
+            })
+            .filter(Boolean)
+          const message = [note, ...assetPaths].filter(Boolean).join('\n')
+          if (!message) {
+            sendJson(res, 400, { error: '送る内容がありません。' })
+            return
+          }
+
+          // The browser writes the user-session clipboard before calling us
+          // (this process may live outside that pasteboard session, so a
+          // server-side pbcopy is unreliable). AppleScript `set the clipboard`
+          // goes through the Apple Events pboard server, so try it as a
+          // belt-and-braces fallback; ignore its failure.
+          const quoted = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n')
+          if (body.clipboardReady !== true) {
+            await runOsascript(`set the clipboard to "${quoted}"`, 3000)
+          }
+          if (!appName) {
+            sendJson(res, 200, { copied: true, sent: false, message })
+            return
+          }
+
+          const autoSend = body.autoSend !== false
+          const script = [
+            `tell application "${appName}" to activate`,
+            'delay 0.5',
+            'tell application "System Events" to keystroke "v" using command down',
+            ...(autoSend ? ['delay 0.3', 'tell application "System Events" to key code 36'] : [])
+          ].join('\n')
+          const osaResult = await runOsascript(script)
+          if (!osaResult.ok) {
+            sendJson(res, 200, {
+              copied: true,
+              sent: false,
+              message,
+              error: `自動送信できませんでした（メッセージはコピー済み — チャットに⌘Vで貼り付けてください）。初回はシステム設定 > プライバシーとセキュリティ > アクセシビリティ/オートメーション の許可が必要な場合があります: ${osaResult.error}`
+            })
+            return
+          }
+          sendJson(res, 200, { copied: true, sent: true, app: appName, autoSend, message })
+        } catch (error) {
+          sendJson(res, 400, { error: error.message })
         }
       })
 

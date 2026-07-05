@@ -2289,6 +2289,29 @@ body {
   transform: translateX(-50%);
 }
 
+.lovart-selection-chat-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Opens downward from the floating toolbar (which sits above the selection). */
+.lovart-selection-chat-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+  left: 50%;
+  min-width: 180px;
+  transform: translateX(-50%);
+}
+
+.lovart-key-send-row {
+  display: flex;
+  gap: 6px;
+}
+
+.lovart-key-send-row .lovart-key-save {
+  flex: 1;
+}
+
 .lovart-selection-toolbar-btn {
   display: inline-flex;
   gap: 4px;
