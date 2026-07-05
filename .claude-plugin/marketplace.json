@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "buzzassist-local",
+  "description": "BuzzAssist canvas and media MCP plugin for Claude Code and Codex.",
+  "owner": {
+    "name": "higataiyu"
+  },
+  "metadata": {
+    "description": "A project-local Excalidraw canvas, shared skills, and MCP tools for visual media workflows."
+  },
+  "plugins": [
+    {
+      "name": "buzzassist",
+      "version": "0.1.0",
+      "source": "./",
+      "description": "BuzzAssist canvas and media MCP tools for Claude Code and Codex.",
+      "author": {
+        "name": "higataiyu"
+      },
+      "category": "productivity"
+    }
+  ]
+}

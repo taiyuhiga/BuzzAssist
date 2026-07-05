@@ -1,0 +1,19 @@
+{
+  "name": "buzzassist",
+  "version": "0.1.0",
+  "description": "BuzzAssist canvas and media MCP tools for Claude Code.",
+  "author": {
+    "name": "higataiyu"
+  },
+  "repository": "https://github.com/taiyuhiga/BuzzAssist.git",
+  "keywords": [
+    "canvas",
+    "buzzassist",
+    "excalidraw",
+    "whiteboard",
+    "mcp",
+    "media-generation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

@@ -51,6 +51,10 @@ const SAVE_DELAY_MS = 450
 const SELECTION_DELAY_MS = 180
 const CANVAS_ASSETS_ROUTE = '/excalidraw-assets/'
 const ASSET_HYDRATION_CONCURRENCY = 6
+const ATTACHMENT_CARD_WIDTH = 320
+const ATTACHMENT_CARD_HEIGHT = 180
+const COLLAPSED_FREEDRAW_MAX_DIMENSION = 1
+const TEXT_ATTACHMENT_EXTENSIONS = new Set(['txt', 'md', 'markdown'])
 const VIDEO_POSTER_FALLBACK_DATA_URL =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjgwIDcyMCI+PHJlY3Qgd2lkdGg9IjEyODAiIGhlaWdodD0iNzIwIiBmaWxsPSIjMTExODI3Ii8+PHBhdGggZD0iTTU2MCAyNTB2MjIwbDE5MC0xMTB6IiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIuOSIvPjwvc3ZnPg=='
 
@@ -431,6 +435,27 @@ function getUploadTargetKind(target) {
   if (target === 'videoReferenceVideos' || target === 'silenceCutVideo') return 'video'
   if (target === 'videoReferenceAudios' || target === 'subtitleAudio') return 'audio'
   return 'image'
+}
+
+function fileExtensionFromName(name) {
+  const match = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/)
+  return match?.[1] || ''
+}
+
+function getFileAssetKind(file) {
+  const mimeType = String(file?.type || '').toLowerCase()
+  const ext = fileExtensionFromName(file?.name)
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('video/')) return 'video'
+  if (mimeType.startsWith('audio/')) return 'audio'
+  if (ext === 'xml' || mimeType === 'application/xml' || mimeType === 'text/xml') return 'xml'
+  if (ext === 'srt' || mimeType === 'application/x-subrip') return 'srt'
+  if (TEXT_ATTACHMENT_EXTENSIONS.has(ext) || mimeType === 'text/plain' || mimeType === 'text/markdown') return 'script'
+  return ''
+}
+
+function isAttachableCanvasFile(file) {
+  return Boolean(getFileAssetKind(file))
 }
 
 function getUploadTargetAccept(target) {
@@ -1012,7 +1037,7 @@ function normalizeScene(scene) {
     type: scene.type ?? 'excalidraw',
     version: scene.version ?? 2,
     source: scene.source ?? 'codex-excalidraw-canvas',
-    elements: restoreAssetBackedImageStatuses(scene.elements, files),
+    elements: restoreAssetBackedImageStatuses(scene.elements, files).map(sanitizeElementForScene),
     appState: scene.appState && typeof scene.appState === 'object' ? scene.appState : {},
     files
   }
@@ -1184,16 +1209,21 @@ async function hydrateSceneAssetBackedFiles(scene, options = {}) {
 // asset URL so PUT /api/canvas payloads stay small over the wire. Only records
 // verifiably asset-backed are stripped (marked codexAssetBacked during
 // hydration, or their element customData points at a canvas asset). Video
-// posters and drag-dropped inline images keep their inline base64.
+// posters and non-image attachment preview cards keep their inline base64.
 function stripAssetBackedFilesForSave(elements, files) {
   if (!files || typeof files !== 'object') return files
   const videoFileIds = new Set()
+  const previewFileIds = new Set()
   const assetUrlByFileId = new Map()
   for (const element of elements ?? []) {
     if (!element?.fileId) continue
     const customData = element.customData ?? {}
     if (customData.codexMediaKind === 'video') {
       videoFileIds.add(element.fileId)
+      continue
+    }
+    if (customData.codexMediaKind && customData.codexMediaKind !== 'image') {
+      previewFileIds.add(element.fileId)
       continue
     }
     if (
@@ -1214,7 +1244,7 @@ function stripAssetBackedFilesForSave(elements, files) {
       file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)
         ? file.codexAssetUrl
         : null
-    if ((!inline && !markedUrl) || videoFileIds.has(id)) {
+    if ((!inline && !markedUrl) || videoFileIds.has(id) || previewFileIds.has(id)) {
       next[id] = file
       continue
     }
@@ -1289,10 +1319,22 @@ function persistableAppState(appState = {}) {
   return next
 }
 
+function isCollapsedFreeDrawElement(element) {
+  if (element?.type !== 'freedraw' || element.isDeleted) return false
+  const width = Math.abs(Number(element.width) || 0)
+  const height = Math.abs(Number(element.height) || 0)
+  return Math.max(width, height) < COLLAPSED_FREEDRAW_MAX_DIMENSION
+}
+
 function sanitizeElementForScene(element) {
-  if (!element?.customData || !isGeneratorFrame(element)) return element
-  const sanitized = sanitizeGeneratorCustomData(element.customData)
-  return sanitized === element.customData ? element : { ...element, customData: sanitized }
+  if (!element || typeof element !== 'object') return element
+  let next = element
+  if (isCollapsedFreeDrawElement(next)) {
+    next = { ...next, isDeleted: true }
+  }
+  if (!next.customData || !isGeneratorFrame(next)) return next
+  const sanitized = sanitizeGeneratorCustomData(next.customData)
+  return sanitized === next.customData ? next : { ...next, customData: sanitized }
 }
 
 function sanitizeGeneratorCustomData(customData) {
@@ -1479,17 +1521,16 @@ function getPanelPlacementFromViewportTarget(target, kind = 'image') {
   const isVideo = kind === true || kind === 'video'
   const frameViewportWidth = Math.max(1, Number(target?.width) || 1)
   const frameViewportHeight = Math.max(1, Number(target?.height) || 1)
-  const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(1, window.innerWidth || 1280)
-  const maxPanelWidth = Math.max(GENERATOR_PANEL_IMAGE_MIN_WIDTH, viewportWidth - GENERATOR_FRAME_EDGE_MARGIN * 2)
   const panelWidth = isVideo
-    ? Math.min(GENERATOR_PANEL_VIDEO_WIDTH, maxPanelWidth)
+    ? GENERATOR_PANEL_VIDEO_WIDTH
     : kind === 'subtitle' || kind === 'silenceCut'
       // The portrait SRT frame fits at a small zoom, so 0.9x its viewport
       // width would collapse the bar pills; keep the desktop's max width.
-      ? Math.min(560, maxPanelWidth)
-      : Math.min(clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH), maxPanelWidth)
+      ? 560
+      : clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH)
   const rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
-  const rawTop = Math.round((Number(target?.top) || 0) + frameViewportHeight + 4)
+  const targetTop = Number(target?.top) || 0
+  const rawTop = Math.round(targetTop + frameViewportHeight + 4)
 
   return {
     left: rawLeft,
@@ -1498,6 +1539,11 @@ function getPanelPlacementFromViewportTarget(target, kind = 'image') {
   }
 }
 
+function getMediaHeaderMetrics(width) {
+  const headerFontSize = Math.max(5, Math.min(14, Math.round((Number(width) || 0) * 0.055)))
+  const headerOffset = Math.max(6, Math.min(18, headerFontSize + 3))
+  return { headerFontSize, headerOffset }
+}
 function getFrameOverlayMetrics(width, height) {
   const safeWidth = Math.max(1, Number(width) || 1)
   const safeHeight = Math.max(1, Number(height) || 1)
@@ -1611,6 +1657,35 @@ function isCanvasVideoElement(element) {
   return !element?.isDeleted && (isGeneratedVideoResult(element) || element?.customData?.codexMediaKind === 'video')
 }
 
+function isCanvasFileAttachmentElement(element) {
+  const kind = element?.customData?.codexMediaKind
+  return !element?.isDeleted && ['audio', 'xml', 'srt', 'script'].includes(kind)
+}
+
+function canvasAssetKindFromElement(element) {
+  const customKind = element?.customData?.codexMediaKind
+  if (['image', 'video', 'audio', 'xml', 'srt', 'script'].includes(customKind)) return customKind
+  if (isGeneratedSubtitleResult(element)) return 'srt'
+  if (isGeneratedVideoResult(element)) return 'video'
+  if (isCanvasImageElement(element)) return 'image'
+  return ''
+}
+
+function isCanvasAttachableElement(element) {
+  return Boolean(
+    !element?.isDeleted &&
+      (isCanvasImageElement(element) || isCanvasVideoElement(element) || isCanvasFileAttachmentElement(element) || isGeneratedSubtitleResult(element))
+  )
+}
+
+function isPanelMediaTargetElement(element) {
+  return Boolean(!element?.isDeleted && (isGeneratedResult(element) || isCanvasImageElement(element) || isCanvasVideoElement(element)))
+}
+
+function panelMediaKindFromElement(element) {
+  return canvasAssetKindFromElement(element) === 'video' ? 'video' : getGeneratedResultKind(element)
+}
+
 function getGeneratorKind(element) {
   if (isVideoGeneratorFrame(element)) return 'video'
   if (isSubtitleGeneratorFrame(element)) return 'subtitle'
@@ -1645,6 +1720,91 @@ function rectsOverlap(a, b, padding = 0) {
   )
 }
 
+function overlapArea(a, b) {
+  const x1 = Math.max(a.x, b.x)
+  const y1 = Math.max(a.y, b.y)
+  const x2 = Math.min(a.x + a.width, b.x + b.width)
+  const y2 = Math.min(a.y + a.height, b.y + b.height)
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1)
+}
+
+function isCanvasAssetUrl(value) {
+  if (typeof value !== 'string' || !value) return false
+  try {
+    const origin = typeof window === 'undefined' ? 'http://127.0.0.1' : window.location.origin
+    const url = new URL(value, origin)
+    return url.pathname.startsWith(CANVAS_ASSETS_ROUTE)
+  } catch {
+    return value.startsWith(CANVAS_ASSETS_ROUTE)
+  }
+}
+
+function normalizeCanvasAssetUrl(value) {
+  if (!isCanvasAssetUrl(value)) return ''
+  try {
+    const origin = typeof window === 'undefined' ? 'http://127.0.0.1' : window.location.origin
+    const url = new URL(value, origin)
+    return `${url.pathname}${url.search || ''}`
+  } catch {
+    return String(value)
+  }
+}
+
+function isFrameVisuallyCoveredByLaterAsset(frame, elements) {
+  const frameBounds = getElementGeometry(frame)
+  const frameArea = frameBounds.width * frameBounds.height
+  const frameIndex = elements.findIndex((element) => element.id === frame.id)
+  if (frameIndex < 0 || frameArea <= 0) return false
+  const frameCenter = {
+    x: frameBounds.x + frameBounds.width / 2,
+    y: frameBounds.y + frameBounds.height / 2
+  }
+  return elements.slice(frameIndex + 1).some((element) => {
+    if (!isCanvasAttachableElement(element)) return false
+    const bounds = getElementGeometry(element)
+    const coversCenter =
+      frameCenter.x >= bounds.x &&
+      frameCenter.x <= bounds.x + bounds.width &&
+      frameCenter.y >= bounds.y &&
+      frameCenter.y <= bounds.y + bounds.height
+    return coversCenter || overlapArea(frameBounds, bounds) / frameArea > 0.45
+  })
+}
+
+function isElementAfterInScene(element, reference, elements) {
+  if (!element || !reference) return false
+  const elementIndex = typeof element.index === 'string' ? element.index : ''
+  const referenceIndex = typeof reference.index === 'string' ? reference.index : ''
+  if (elementIndex && referenceIndex && elementIndex !== referenceIndex) {
+    return elementIndex > referenceIndex
+  }
+  const referencePosition = elements.findIndex((item) => item.id === reference.id)
+  const elementPosition = elements.findIndex((item) => item.id === element.id)
+  return referencePosition >= 0 && elementPosition > referencePosition
+}
+
+function isFrameHeaderCoveredByLaterAsset(frame, elements, appState, placement, metrics) {
+  if (!metrics?.showHeader) return false
+  const headerHeight = Math.max(14, Number(metrics.headerFontSize) + 8)
+  const headerBounds = {
+    x: Number(placement?.left) || 0,
+    y: (Number(placement?.top) || 0) - (Number(metrics.headerOffset) || 0) - 2,
+    width: Math.max(1, Number(placement?.width) || 1),
+    height: headerHeight
+  }
+  return elements.some((element) => {
+    if (!isElementAfterInScene(element, frame, elements) || !isCanvasAttachableElement(element)) return false
+    const assetPlacement = getFrameViewportPlacement(getElementGeometry(element), appState)
+    const assetBounds = {
+      x: assetPlacement.left,
+      y: assetPlacement.top,
+      width: assetPlacement.width,
+      height: assetPlacement.height
+    }
+    return rectsOverlap(headerBounds, assetBounds, 2)
+  })
+}
+
 function findNonOverlappingPlacement(elements, initial) {
   const obstacles = elements.filter((element) => !element.isDeleted).map(getElementGeometry)
   if (!obstacles.some((bounds) => rectsOverlap(initial, bounds, 8))) return initial
@@ -1676,7 +1836,10 @@ function normalizeAssetList(value) {
       const path = typeof item.path === 'string' ? item.path : ''
       const url = typeof item.url === 'string' ? item.url : ''
       const displayURL = url || path || ''
-      const thumbnail = typeof item.thumbnail === 'string' && !item.thumbnail.startsWith('data:')
+      const rawThumbnail = typeof item.thumbnail === 'string' ? item.thumbnail : ''
+      const thumbnail = rawThumbnail.startsWith('data:image/')
+        ? rawThumbnail
+        : rawThumbnail && !rawThumbnail.startsWith('data:')
         ? item.thumbnail
         : displayURL
       return {
@@ -1703,6 +1866,82 @@ function readImageDimensions(dataURL) {
     image.onerror = () => resolve({ width: 1024, height: 1024 })
     image.src = dataURL
   })
+}
+
+function escapeSvgText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function truncateMiddle(value, maxLength = 34) {
+  const text = String(value || '')
+  if (text.length <= maxLength) return text
+  const keep = Math.max(6, Math.floor((maxLength - 1) / 2))
+  return `${text.slice(0, keep)}…${text.slice(-keep)}`
+}
+
+function svgToDataURL(svg) {
+  const encoded = typeof window !== 'undefined' && typeof window.btoa === 'function'
+    ? window.btoa(unescape(encodeURIComponent(svg)))
+    : ''
+  return encoded ? `data:image/svg+xml;base64,${encoded}` : `data:image/svg+xml,${encodeURIComponent(svg)}`
+}
+
+function attachmentKindLabel(kind) {
+  if (kind === 'audio') return 'AUDIO'
+  if (kind === 'xml') return 'XML'
+  if (kind === 'srt') return 'SRT'
+  if (kind === 'script') return 'SCRIPT'
+  return 'FILE'
+}
+
+function attachmentKindTitle(kind) {
+  if (kind === 'audio') return '音声'
+  if (kind === 'xml') return 'Premiere XML'
+  if (kind === 'srt') return 'SRT字幕'
+  if (kind === 'script') return '台本'
+  return 'ファイル'
+}
+
+function assetHeaderIcon(kind) {
+  if (kind === 'image') return '🖼'
+  if (kind === 'video') return '🎬'
+  if (kind === 'audio') return '♪'
+  if (kind === 'xml') return '<>'
+  if (kind === 'srt' || kind === 'script') return '📝'
+  return '📎'
+}
+
+function createAttachmentPreviewDataURL(asset) {
+  const kind = asset?.kind || 'file'
+  const label = attachmentKindLabel(kind)
+  const title = escapeSvgText(attachmentKindTitle(kind))
+  const name = escapeSvgText(truncateMiddle(asset?.name || 'asset', 38))
+  const detail = kind === 'audio' && Number(asset?.duration) > 0
+    ? `${formatAssetDuration(asset.duration)}`
+    : String(asset?.mimeType || '').split(';')[0] || label
+  const color = kind === 'audio'
+    ? '#2563eb'
+    : kind === 'xml'
+      ? '#7c3aed'
+      : kind === 'srt'
+        ? '#059669'
+        : '#374151'
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="${ATTACHMENT_CARD_WIDTH}" height="${ATTACHMENT_CARD_HEIGHT}" viewBox="0 0 ${ATTACHMENT_CARD_WIDTH} ${ATTACHMENT_CARD_HEIGHT}">
+  <rect width="100%" height="100%" rx="14" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="${ATTACHMENT_CARD_WIDTH - 1}" height="${ATTACHMENT_CARD_HEIGHT - 1}" rx="13.5" fill="none" stroke="#d7dce5"/>
+  <rect x="22" y="24" width="74" height="74" rx="18" fill="${color}" opacity="0.12"/>
+  <text x="59" y="69" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="800" fill="${color}">${label}</text>
+  <text x="116" y="52" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">${title}</text>
+  <text x="116" y="82" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="600" fill="#4b5563">${name}</text>
+  <text x="116" y="112" font-family="Inter, Arial, sans-serif" font-size="13" fill="#8a94a6">${escapeSvgText(detail)}</text>
+  <path d="M24 ${ATTACHMENT_CARD_HEIGHT - 32}H${ATTACHMENT_CARD_WIDTH - 24}" stroke="#edf0f5" stroke-width="2"/>
+</svg>`
+  return svgToDataURL(svg)
 }
 
 function readVideoPoster(file) {
@@ -1818,22 +2057,27 @@ function assetReferenceFromElement(element, files = {}) {
   if (!element) return null
   const file = element.fileId ? files[element.fileId] : null
   const path = assetPathFromElement(element)
-  const url = assetUrlFromElement(element)
+  const url = normalizeCanvasAssetUrl(assetUrlFromElement(element) || file?.codexAssetUrl || file?.dataURL)
   const dataURL = file?.dataURL || ''
   if (!path && !url && !dataURL) return null
-  const isVideo = isCanvasVideoElement(element)
   const customData = element.customData ?? {}
+  const kind = canvasAssetKindFromElement(element) || 'image'
   const pixelSize = getCanvasMediaPixelSize(element, files)
+  const previewDataURL = typeof dataURL === 'string' && dataURL.startsWith('data:image/') ? dataURL : ''
   return {
     id: crypto.randomUUID(),
-    name: getCanvasMediaDisplayName(element, files) || (isVideo ? 'canvas-video' : 'canvas-image'),
-    kind: isVideo ? 'video' : 'image',
-    mimeType: isVideo ? (customData.codexVideoMimeType || file?.mimeType || 'video/mp4') : (file?.mimeType || 'image/png'),
+    name: getCanvasMediaDisplayName(element, files) || `canvas-${kind}`,
+    kind,
+    mimeType:
+      customData.codexAssetMimeType ||
+      (kind === 'video' ? customData.codexVideoMimeType : '') ||
+      file?.mimeType ||
+      (kind === 'audio' ? 'audio/mpeg' : kind === 'xml' ? 'application/xml' : kind === 'srt' ? 'application/x-subrip' : kind === 'script' ? 'text/plain' : 'image/png'),
     path,
     url,
-    dataURL,
-    thumbnail: dataURL || url,
-    duration: isVideo ? Number(customData.codexVideoDuration) || 0 : undefined,
+    dataURL: kind === 'image' ? dataURL : '',
+    thumbnail: previewDataURL || url,
+    duration: kind === 'video' ? Number(customData.codexVideoDuration) || 0 : Number(customData.codexAssetDuration) || undefined,
     pixelWidth: pixelSize.width,
     pixelHeight: pixelSize.height
   }
@@ -2069,29 +2313,6 @@ function frameCustomDataFromForm(kind, form) {
       }
 }
 
-// High-precision SRT via an AI agent chat (Claude Code / Codex): the agent
-// runs the normal cloud transcription through MCP, then proofreads the text
-// against the script + glossary and re-breaks lines semantically — the part
-// a plain speech-to-text pass cannot do.
-function buildAgentSubtitlePrompt(form, anchorElementId) {
-  const lines = [
-    'キャンバスのSRTジェネレーターの「高精度生成」をお願いします。',
-    `音声ファイル: ${form.subtitleAudio?.path || ''}`,
-    form.subtitleMode === 'scripted' && form.subtitleScriptText.trim()
-      ? `台本（${form.subtitleScriptName || 'script'}）:\n---\n${form.subtitleScriptText.trim()}\n---`
-      : '台本なし（音声からの文字起こし）',
-    `設定: ${form.subtitleLineCount}行 / 1行最大${form.subtitleMaxChars}字 / 句読点 ${form.subtitlePunctuationMode} / フィラー ${form.subtitleFillerMode} / 間の保持 ${form.subtitleHoldSeconds}秒`,
-    '',
-    '手順:',
-    `1. excalidraw MCP の generate_excalidraw_subtitles を audioPath と上記設定、anchorElementId "${anchorElementId}"、replaceAnchor: true、confirmedSettings: true で実行し、まず標準のSRTカードを生成する`,
-    '2. 生成されたSRTを読み、台本と用語辞書 (canvas/subtitle-glossary.json) に照らしてテキストだけ校正する（同音異義語・誤変換・脱字・表記ゆれを修正。時刻は変えない。発言内容は変えない）',
-    `3. 意味の切れ目で自然な改行に整える（1行${form.subtitleMaxChars}字以内・${form.subtitleLineCount}行まで）`,
-    '4. 修正があれば generate_excalidraw_subtitles を subtitleLines（各cueの text/start/end）+ 同じ anchorElementId + replaceAnchor: true + confirmedSettings: true で再実行してカードを置き換える',
-    '5. 繰り返し直した固有名詞などは同じ呼び出しの glossarySuggestions: [{from, to}] で用語辞書に学習させる'
-  ]
-  return lines.filter((line) => line !== null && line !== undefined).join('\n')
-}
-
 function mergeAssetIntoForm(form, target, asset) {
   if (target === 'imageReferences') return { ...form, imageReferences: [...normalizeAssetList(form.imageReferences), asset].slice(-3) }
   if (target === 'videoStartFrame') return { ...form, videoStartFrame: asset }
@@ -2101,6 +2322,42 @@ function mergeAssetIntoForm(form, target, asset) {
   if (target === 'subtitleAudio') return { ...form, subtitleAudio: asset }
   if (target === 'silenceCutVideo') return { ...form, silenceCutVideo: asset }
   return { ...form, videoReferenceImages: [...normalizeAssetList(form.videoReferenceImages), asset].slice(-3) }
+}
+
+function buildPanelTargetFromScene(scene, activeFrameId, selectedGeneratedResult) {
+  if (!scene || !Array.isArray(scene.elements)) return null
+  const appState = scene.appState ?? {}
+  const elementsById = new Map(scene.elements.map((element) => [element.id, element]))
+
+  if (selectedGeneratedResult?.elementId) {
+    const element = elementsById.get(selectedGeneratedResult.elementId)
+    if (isPanelMediaTargetElement(element)) {
+      const geometry = getElementGeometry(element)
+      const placement = getFrameViewportPlacement(geometry, appState)
+      return {
+        id: selectedGeneratedResult.id || `result:${element.id}`,
+        elementId: element.id,
+        kind: panelMediaKindFromElement(element),
+        ...geometry,
+        ...placement
+      }
+    }
+  }
+
+  if (activeFrameId) {
+    const element = elementsById.get(activeFrameId)
+    if (!isGeneratorFrame(element)) return null
+    const geometry = getElementGeometry(element)
+    const placement = getFrameViewportPlacement(geometry, appState)
+    return {
+      id: element.id,
+      kind: getGeneratorKind(element),
+      ...geometry,
+      ...placement
+    }
+  }
+
+  return null
 }
 
 function buildFrameOverlays(scene) {
@@ -2115,6 +2372,7 @@ function buildFrameOverlays(scene) {
       const pixelWidth = Number(element.customData?.pixelWidth) || Math.round(element.width * 4)
       const pixelHeight = Number(element.customData?.pixelHeight) || Math.round(element.height * 4)
       const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+      const overlayMetrics = getFrameOverlayMetrics(placement.width, placement.height)
       return {
         id: element.id,
         kind,
@@ -2123,6 +2381,8 @@ function buildFrameOverlays(scene) {
         // MCP/batch jobs mark their placeholder frames so the browser shows
         // the Generating... overlay for work it did not start itself.
         remoteGenerating: element.customData?.codexGenerating === true,
+        isCoveredByLaterAsset: isFrameVisuallyCoveredByLaterAsset(element, scene.elements),
+        isHeaderCoveredByLaterAsset: isFrameHeaderCoveredByLaterAsset(element, scene.elements, appState, placement, overlayMetrics),
         left: placement.left,
         top: placement.top,
         width: placement.width,
@@ -2137,12 +2397,23 @@ function buildFrameOverlays(scene) {
 function getCanvasMediaDisplayName(element, files = {}) {
   const customData = element?.customData ?? {}
   const file = element?.fileId ? files[element.fileId] : null
+  const kind = canvasAssetKindFromElement(element)
   return (
     customData.codexFileName ||
     customData.generatorFileName ||
     customData.codexGenerationPrompt ||
     file?.name ||
-    (isCanvasVideoElement(element) ? 'Video' : 'Image')
+    (kind === 'video'
+      ? 'Video'
+      : kind === 'audio'
+        ? 'Audio'
+        : kind === 'xml'
+          ? 'Premiere XML'
+          : kind === 'srt'
+            ? 'Subtitles'
+            : kind === 'script'
+              ? 'Script'
+              : 'Image')
   )
 }
 
@@ -2171,19 +2442,22 @@ function buildSelectedImageOverlays(scene) {
   // Youtube-AGI shows media headers for every media element near the
   // viewport, not only the selected one.
   return scene.elements
-    .filter((element) => !element.isDeleted && (isCanvasImageElement(element) || isCanvasVideoElement(element)))
+    .filter(isCanvasAttachableElement)
     .map((element) => {
       const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
       const pixelSize = getCanvasMediaPixelSize(element, scene.files)
       const file = element.fileId ? scene.files?.[element.fileId] : null
-      const assetUrl =
+      const assetUrl = normalizeCanvasAssetUrl(
         assetUrlFromElement(element) ||
-        (typeof file?.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE) ? file.codexAssetUrl : '') ||
-        (typeof file?.dataURL === 'string' && file.dataURL.startsWith(CANVAS_ASSETS_ROUTE) ? file.dataURL : '')
+        (isCanvasAssetUrl(file?.codexAssetUrl) ? file.codexAssetUrl : '') ||
+        (isCanvasAssetUrl(file?.dataURL) ? file.dataURL : '')
+      )
+      const assetType = canvasAssetKindFromElement(element)
       return {
         id: element.id,
-        assetType: isCanvasVideoElement(element) ? 'video' : 'image',
+        assetType,
         fileName: getCanvasMediaDisplayName(element, scene.files),
+        assetPath: assetPathFromElement(element),
         assetUrl,
         isSelected: selectedIds.has(element.id),
         left: placement.left,
@@ -2371,8 +2645,7 @@ function SubtitleCanvasOverlay({ overlay, scrollOffset }) {
   const safeScrollOffset = Math.max(0, Math.min(scrollOffset || 0, layout.maxScroll))
   const gutterDigits = Math.max(2, String(lines.length).length)
   const gutterWidth = Math.max(Math.round(fontSize * 1.8), Math.round(fontSize * 0.62 * (gutterDigits + 1.5)))
-  const headerFontSize = Math.max(5, Math.min(14, Math.round(overlay.width * 0.055)))
-  const headerOffset = Math.max(6, Math.min(18, headerFontSize + 3))
+  const { headerFontSize, headerOffset } = getMediaHeaderMetrics(overlay.width)
   const lineCountLabel = `${lines.length} 行`
   const overscan = 12
   const firstVisibleLine = Math.max(0, Math.floor((safeScrollOffset - topPadding) / rowHeight) - overscan)
@@ -2808,9 +3081,6 @@ export default function App() {
   const [lovartKeySaving, setLovartKeySaving] = useState(false)
   const [lovartKeyEditing, setLovartKeyEditing] = useState(false)
   const [hermesStatus, setHermesStatus] = useState(null)
-  const [bulkDownloading, setBulkDownloading] = useState(false)
-  const [proofreadCopied, setProofreadCopied] = useState(false)
-  const [chatSendMenuOpen, setChatSendMenuOpen] = useState(false)
   const [chatSendStatus, setChatSendStatus] = useState('')
 
   // Bridge to the local Claude Code / Codex app. Files attach natively via
@@ -2818,14 +3088,14 @@ export default function App() {
   // prompts ride the same channel as a small request file. The message is
   // also written to the user-session clipboard from the browser so a manual
   // ⌘V always works (Codex can't accept media files via open).
-  const sendToChatApp = useCallback(async ({ app, text, assetUrls, autoSend = false }) => {
+  const sendToChatApp = useCallback(async ({ app, text, assetUrls, assetItems, autoSend = false }) => {
     setChatSendStatus('sending')
     try {
       // Step 1: resolve asset URLs to absolute paths server-side.
       const resolveResponse = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ app: '', text, assetUrls })
+        body: JSON.stringify({ app: '', text, assetUrls, assetItems })
       })
       const resolved = await resolveResponse.json().catch(() => ({}))
       if (!resolveResponse.ok) throw new Error(resolved.error || `送信に失敗しました (${resolveResponse.status})`)
@@ -2845,7 +3115,7 @@ export default function App() {
       const response = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ app, text, assetUrls, autoSend })
+        body: JSON.stringify({ app, text, assetUrls, assetItems, autoSend })
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload.error || `送信に失敗しました (${response.status})`)
@@ -3180,16 +3450,17 @@ export default function App() {
     refreshOverlayStates(scene)
     const elementsById = new Map(scene.elements.map((element) => [element.id, element]))
     const selectedIds = getSelectedIds(scene.appState)
-    const selectedFrameId = selectedIds.find((id) => isGeneratorFrame(elementsById.get(id))) ?? ''
+    const selectedResultId =
+      selectedIds.find((id) => isPanelMediaTargetElement(elementsById.get(id))) ??
+      selectedIds
+        .map((id) => elementsById.get(id)?.customData?.codexVideoLabelFor)
+        .find((id) => isPanelMediaTargetElement(elementsById.get(id))) ??
+      ''
+    const selectedFrameId = selectedResultId
+      ? ''
+      : selectedIds.find((id) => isGeneratorFrame(elementsById.get(id))) ?? ''
     const pendingWrite = pendingFrameFormWriteRef.current
     if (pendingWrite && pendingWrite.frameId !== selectedFrameId) flushPendingFrameFormWrite()
-    const selectedResultId = !selectedFrameId
-      ? (selectedIds.find((id) => isGeneratedResult(elementsById.get(id))) ??
-          selectedIds
-            .map((id) => elementsById.get(id)?.customData?.codexVideoLabelFor)
-            .find((id) => isGeneratedResult(elementsById.get(id))) ??
-          '')
-      : ''
 
     if (selectedFrameId) {
       const selectedFrame = elementsById.get(selectedFrameId)
@@ -3211,7 +3482,7 @@ export default function App() {
     if (selectedResultId) {
       const selectedResult = elementsById.get(selectedResultId)
       const resultChanged = selectedGeneratedResultRef.current?.elementId !== selectedResultId
-      const kind = getGeneratedResultKind(selectedResult)
+      const kind = panelMediaKindFromElement(selectedResult)
       const geometry = getElementGeometry(selectedResult)
       const placement = getFrameViewportPlacement(geometry, scene.appState)
       activeFrameIdRef.current = ''
@@ -4099,8 +4370,22 @@ export default function App() {
 
     // Stream the file straight to disk with constant memory and no size cap —
     // large/long media (podcast videos, long audio) attach without buffering
-    // the whole file in RAM or base64-encoding it.
+    // the whole file in RAM or base64-encoding it. When the webview exposes
+    // the picked file's local path (Electron), skip the HTTP transfer
+    // entirely: the server clones the file on disk (APFS copy-on-write), so
+    // even multi-GB podcasts attach instantly.
     const streamUpload = async (uploadFile) => {
+      const localPath = typeof uploadFile.path === 'string' && uploadFile.path ? uploadFile.path : ''
+      if (localPath) {
+        const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sourcePath: localPath, fileName: uploadFile.name })
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (response.ok && !payload.error) return payload
+        // Fall through to the streaming path (e.g. path outside this session).
+      }
       const response = await fetch(ASSET_UPLOAD_ENDPOINT, {
         method: 'POST',
         headers: {
@@ -4117,14 +4402,17 @@ export default function App() {
     }
 
   const uploadAssetFile = useCallback(async (file, options = {}) => {
-    const isXmlFile = /\.xml$/i.test(file.name || '') || /^(application|text)\/xml$/i.test(file.type || '')
-    if (isXmlFile) {
+    const fileKind = getFileAssetKind(file)
+    if (fileKind === 'xml' || fileKind === 'srt' || fileKind === 'script') {
       const payload = await streamUpload(file)
       return {
         id: crypto.randomUUID(),
         name: file.name,
-        kind: 'xml',
-        mimeType: payload.mimeType || file.type || 'application/xml',
+        kind: fileKind,
+        mimeType:
+          payload.mimeType ||
+          file.type ||
+          (fileKind === 'xml' ? 'application/xml' : fileKind === 'srt' ? 'application/x-subrip' : 'text/plain'),
         path: payload.path,
         url: payload.url,
         dataURL: '',
@@ -4133,7 +4421,7 @@ export default function App() {
       }
     }
 
-    if (file.type.startsWith('audio/')) {
+    if (fileKind === 'audio') {
       // Probe duration and stream the bytes concurrently so long audio attaches fast.
       const [metadata, payload] = await Promise.all([readAudioMetadata(file), streamUpload(file)])
       if (metadata.objectURL && typeof URL !== 'undefined') URL.revokeObjectURL(metadata.objectURL)
@@ -4150,7 +4438,7 @@ export default function App() {
       }
     }
 
-    if (file.type.startsWith('video/')) {
+    if (fileKind === 'video') {
       // Poster extraction and the byte upload run in parallel.
       const posterPromise = options.poster && typeof options.poster === 'object'
         ? Promise.resolve(options.poster)
@@ -4170,6 +4458,10 @@ export default function App() {
         pixelWidth: poster.width,
         pixelHeight: poster.height
       }
+    }
+
+    if (fileKind !== 'image') {
+      throw new Error('このファイル形式は添付できません。')
     }
 
     const dataURL = await fileToDataURL(file)
@@ -4244,16 +4536,16 @@ export default function App() {
   )
 
   const openCanvasPicker = useCallback((target) => {
-    const frameId = activeFrameIdRef.current || selectedGeneratedResultRef.current?.elementId || ''
+    const frameId = activeFrameIdRef.current || lastFocusedFrameIdRef.current || ''
     canvasPickerFrameIdRef.current = frameId
     canvasPickerRef.current = { target, frameId }
     setCanvasPicker({ target, frameId })
     setOpenMenu(null)
-    if (api && frameId) {
+    if (api) {
       suppressNextChangeRef.current = true
       window.setTimeout(() => {
         api.updateScene({
-          appState: { selectedElementIds: { [frameId]: true } },
+          appState: { selectedElementIds: frameId ? { [frameId]: true } : {} },
           captureUpdate: CaptureUpdateAction.NEVER
         })
       }, 0)
@@ -4266,7 +4558,7 @@ export default function App() {
   }, [api])
 
   const rememberGeneratorUploadFrame = useCallback(() => {
-    pendingGeneratorUploadFrameIdRef.current = activeFrameIdRef.current || selectedGeneratedResultRef.current?.elementId || ''
+    pendingGeneratorUploadFrameIdRef.current = activeFrameIdRef.current || lastFocusedFrameIdRef.current || ''
   }, [])
 
   const restoreGeneratorUploadFrame = useCallback(() => {
@@ -4314,7 +4606,7 @@ export default function App() {
       const selected = scene.elements.find((element) =>
         selectedIds.has(element.id) &&
         !isGeneratorFrame(element) &&
-        (isCanvasImageElement(element) || isCanvasVideoElement(element))
+        isCanvasAttachableElement(element)
       )
       if (!selected) return false
       const asset = assetReferenceFromElement(selected, scene.files)
@@ -4323,9 +4615,9 @@ export default function App() {
       if (picker.target === 'imageReferences' && asset.kind !== 'image') return false
       if (picker.target === 'videoReferenceVideos' && asset.kind !== 'video') return false
       if (picker.target === 'videoReferenceAudios' && asset.kind !== 'audio') return false
-      // SRT audio / silence cut take a canvas video (SRT extracts its audio).
-      if (picker.target === 'subtitleAudio' && asset.kind !== 'video') return false
-      if (picker.target === 'silenceCutVideo' && asset.kind !== 'video') return false
+      // SRT audio accepts audio files or videos (audio extraction happens server-side).
+      if (picker.target === 'subtitleAudio' && asset.kind !== 'audio' && asset.kind !== 'video') return false
+      if (picker.target === 'silenceCutVideo' && asset.kind !== 'video' && asset.kind !== 'xml') return false
       const restoreFrameId = picker.frameId || canvasPickerFrameIdRef.current || ''
       const applyPickedAsset = (pickedAsset) => {
         if (restoreFrameId) activeFrameIdRef.current = restoreFrameId
@@ -4409,7 +4701,7 @@ export default function App() {
   // Shared media inserter for both the toolbar media tool (#9) and drag-and-drop.
   // `atPoint` (scene coords) sets where placement starts; defaults to viewport center.
   const insertMediaFiles = useCallback(async (rawFiles, options = {}) => {
-    const files = (rawFiles || []).filter((file) => file && (file.type.startsWith('image/') || file.type.startsWith('video/')))
+    const files = (rawFiles || []).filter((file) => file && isAttachableCanvasFile(file))
     if (!api || files.length === 0) return
 
     try {
@@ -4425,9 +4717,11 @@ export default function App() {
       let cursorY = options.point ? Math.round(options.point.y - 150) : Math.round(center.y - 150)
 
       for (const file of files) {
-        if (file.type.startsWith('image/')) {
+        const fileKind = getFileAssetKind(file)
+        if (fileKind === 'image') {
           const dataURL = await fileToDataURL(file)
           const dimensions = await readImageDimensions(dataURL)
+          const uploaded = await uploadAssetFile(file)
           const displayWidth = Math.min(560, Math.max(160, dimensions.width))
           const displayHeight = Math.max(90, Math.round(displayWidth * (dimensions.height / dimensions.width)))
           const bounds = findNonOverlappingPlacement(nextElements, {
@@ -4454,6 +4748,9 @@ export default function App() {
               codexInsertedImage: true,
               codexMediaKind: 'image',
               codexFileName: file.name,
+              codexAssetPath: uploaded.path,
+              codexAssetUrl: uploaded.url,
+              codexAssetMimeType: uploaded.mimeType || file.type || 'image/png',
               codexPixelWidth: dimensions.width,
               codexPixelHeight: dimensions.height
             }
@@ -4462,7 +4759,7 @@ export default function App() {
           insertedIds[imageElement.id] = true
           cursorX = bounds.x + bounds.width + 24
           cursorY = bounds.y
-        } else if (file.type.startsWith('video/')) {
+        } else if (fileKind === 'video') {
           const poster = await readVideoPoster(file)
           const aspect = poster.width > 0 && poster.height > 0 ? poster.width / poster.height : 16 / 9
           const displayWidth = Math.min(560, Math.max(220, poster.width || 560))
@@ -4503,6 +4800,45 @@ export default function App() {
           nextElements.push(videoElement)
           insertedIds[videoElement.id] = true
           videoUploadTasks.push({ file, elementId: videoElement.id, objectURL: poster.objectURL, poster })
+          cursorX = bounds.x + bounds.width + 24
+          cursorY = bounds.y
+        } else {
+          const asset = await uploadAssetFile(file)
+          const previewDataURL = createAttachmentPreviewDataURL(asset)
+          const bounds = findNonOverlappingPlacement(nextElements, {
+            x: cursorX,
+            y: cursorY,
+            width: ATTACHMENT_CARD_WIDTH,
+            height: ATTACHMENT_CARD_HEIGHT
+          })
+          const fileId = crypto.randomUUID()
+          const fileRecord = {
+            id: fileId,
+            mimeType: 'image/svg+xml',
+            dataURL: previewDataURL,
+            created: Date.now(),
+            lastRetrieved: Date.now()
+          }
+          filesForScene[fileId] = fileRecord
+          liveFiles.push(fileRecord)
+          const cardElement = createImageElementRecord({
+            fileId,
+            bounds,
+            index: chooseElementIndex(nextElements),
+            customData: {
+              codexInsertedAttachment: true,
+              codexMediaKind: asset.kind,
+              codexFileName: asset.name,
+              codexAssetPath: asset.path,
+              codexAssetUrl: asset.url,
+              codexAssetMimeType: asset.mimeType,
+              codexAssetDuration: Number(asset.duration) || 0,
+              codexPixelWidth: ATTACHMENT_CARD_WIDTH,
+              codexPixelHeight: ATTACHMENT_CARD_HEIGHT
+            }
+          })
+          nextElements.push(cardElement)
+          insertedIds[cardElement.id] = true
           cursorX = bounds.x + bounds.width + 24
           cursorY = bounds.y
         }
@@ -4579,7 +4915,11 @@ export default function App() {
     const hasMediaFiles = (event) => {
       const items = event.dataTransfer?.items
       if (items && items.length) {
-        return Array.from(items).some((it) => it.kind === 'file' && /^(image|video)\//.test(it.type || ''))
+        return Array.from(items).some((it) => {
+          if (it.kind !== 'file') return false
+          const type = String(it.type || '').toLowerCase()
+          return /^(image|video|audio)\//.test(type) || type === 'application/xml' || type === 'text/xml' || type === 'text/plain' || type === 'text/markdown'
+        })
       }
       const types = event.dataTransfer?.types
       return Boolean(types && Array.prototype.includes.call(types, 'Files'))
@@ -4594,9 +4934,7 @@ export default function App() {
     }
 
     const onDrop = (event) => {
-      const files = Array.from(event.dataTransfer?.files || []).filter(
-        (file) => file.type.startsWith('image/') || file.type.startsWith('video/')
-      )
+      const files = Array.from(event.dataTransfer?.files || []).filter(isAttachableCanvasFile)
       if (files.length === 0) return
       event.preventDefault()
       event.stopPropagation()
@@ -5175,8 +5513,7 @@ export default function App() {
               durationSeconds: Number(savedForm.subtitleAudio.duration) || undefined,
               anchorElementId,
               placement: 'replace',
-              replaceAnchor: true,
-              fileName: `${(savedForm.subtitleAudio.name || 'subtitles').replace(/\.[^.]+$/, '')}.srt`
+              replaceAnchor: true
             }
           : {
               videoPath: savedForm.silenceCutVideo.path,
@@ -5189,8 +5526,7 @@ export default function App() {
               thresholdDb: savedForm.silenceCutThresholdAuto ? 'auto' : savedForm.silenceCutThresholdDb,
               keepSeconds: savedForm.silenceCutKeepSeconds,
               preMarginSeconds: savedForm.silenceCutPreMarginSeconds,
-              postMarginSeconds: savedForm.silenceCutPostMarginSeconds,
-              fileName: `${(savedForm.silenceCutVideo.name || 'timeline').replace(/\.[^.]+$/, '')}-jetcut.xml`
+              postMarginSeconds: savedForm.silenceCutPostMarginSeconds
             }
 
       const response = await fetch(endpoint, {
@@ -5378,14 +5714,11 @@ export default function App() {
     return <main className="codex-excalidraw-status">Canvas file could not be loaded.</main>
   }
 
+  const livePanelTarget = buildPanelTargetFromScene(latestSceneRef.current, activeFrameId, selectedGeneratedResult)
   const activeOverlay = frameOverlays.find((overlay) => overlay.id === activeFrameId)
   const isCurrentFrameGenerating = activeFrameId ? generatingFrameIds.has(activeFrameId) : false
-  const activePanelTarget = activeOverlay ?? selectedGeneratedResult
-  const panelAppState = latestSceneRef.current?.appState ?? {}
-  const activePanelTargetIsVisible = activePanelTarget
-    ? isViewportPlacementNearViewport(activePanelTarget, panelAppState, 24)
-    : false
-  const showPromptPanel = Boolean(activePanelTarget && activePanelTargetIsVisible && !isCurrentFrameGenerating)
+  const activePanelTarget = livePanelTarget ?? activeOverlay ?? selectedGeneratedResult
+  const showPromptPanel = Boolean(activePanelTarget && !isCurrentFrameGenerating)
   // One canonical entry per model; the execution route (Codex / Hermes /
   // BuzzAssist / Lovart) is chosen per model in the settings row and mapped
   // to the concrete backend id stored in frameForm.
@@ -5617,6 +5950,7 @@ export default function App() {
         const isGenerating = generatingFrameIds.has(overlay.id) || overlay.remoteGenerating
         const isVideo = overlay.kind === 'video'
         const isUtilityFrame = overlay.kind === 'subtitle' || overlay.kind === 'silenceCut'
+        if (overlay.isCoveredByLaterAsset && !overlay.isSelected && !isGenerating) return null
         const overlayTitle =
           overlay.kind === 'video'
             ? 'Video Generator'
@@ -5628,6 +5962,7 @@ export default function App() {
                   ? 'Lovart Generator'
                   : 'Image Generator'
         const overlayMetrics = getFrameOverlayMetrics(overlay.width, overlay.height)
+        const showFrameHeader = overlayMetrics.showHeader && !overlay.isHeaderCoveredByLaterAsset
         return (
           <div
             key={overlay.id}
@@ -5717,7 +6052,7 @@ export default function App() {
               window.addEventListener('pointerup', onUp)
             } : undefined}
           >
-            {overlayMetrics.showHeader ? (
+            {showFrameHeader ? (
               <div
                 className="lovart-frame-header"
                 style={{ top: `-${overlayMetrics.headerOffset}px`, fontSize: `${overlayMetrics.headerFontSize}px` }}
@@ -5780,8 +6115,7 @@ export default function App() {
       ))}
 
       {selectedImageOverlays.map((img) => {
-        const headerFontSize = Math.max(5, Math.min(14, Math.round(img.width * 0.055)))
-        const headerOffset = Math.max(6, Math.min(18, headerFontSize + 3))
+        const { headerFontSize, headerOffset } = getMediaHeaderMetrics(img.width)
         if (img.width < 28) return null
         return (
           <div
@@ -5796,12 +6130,12 @@ export default function App() {
               transform: img.angle ? `rotate(${img.angle}rad)` : undefined,
               transformOrigin: 'center center'
             }}
-          >
-            <div className="lovart-image-header" style={{ top: `-${headerOffset}px`, fontSize: `${headerFontSize}px` }}>
-              <div className="lovart-image-header-name">
-                <span style={{ fontSize: '0.9em' }}>{img.assetType === 'video' ? '🎬' : '🖼'}</span>
-                <span className="lovart-image-header-name-text">{img.fileName}</span>
-              </div>
+            >
+              <div className="lovart-image-header" style={{ top: `-${headerOffset}px`, fontSize: `${headerFontSize}px` }}>
+                <div className="lovart-image-header-name">
+                  <span className="lovart-image-header-kind" aria-hidden="true">{assetHeaderIcon(img.assetType)}</span>
+                  <span className="lovart-image-header-name-text">{img.fileName}</span>
+                </div>
               {img.pixelWidth > 0 && img.pixelHeight > 0 && img.width >= 90 ? (
                 <div className="lovart-image-header-size">{img.pixelWidth} × {img.pixelHeight}</div>
               ) : null}
@@ -5810,6 +6144,9 @@ export default function App() {
         )
       })}
       {(() => {
+        // BuzzAssist keeps canvas media selection chrome to the file-name
+        // header only; chat/file actions live outside this canvas overlay.
+        return null
         // Lovart-style selection toolbar: click or marquee-select any media
         // (image / video / SRT card / silence-cut XML output) and a floating
         // toolbar appears above the selection bounds with a download button.
@@ -5820,20 +6157,29 @@ export default function App() {
           .map((overlay) => ({
             ...overlay,
             assetType: 'xml',
+            assetPath: overlay.outputAsset.path || '',
             assetUrl: overlay.outputAsset.url,
             fileName: overlay.outputAsset.name || assetFileNameFromUrl(overlay.outputAsset.url) || 'jetcut.xml'
           }))
+        const selectedCanvasAssetIds = new Set(selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl).map((overlay) => overlay.id))
         const selectedMedia = [
           ...selectedImageOverlays.filter((overlay) => overlay.isSelected && overlay.assetUrl),
           ...subtitlePreviewOverlays
-            .filter((overlay) => overlay.isSelected && overlay.assetUrl)
+            .filter((overlay) => overlay.isSelected && overlay.assetUrl && !selectedCanvasAssetIds.has(overlay.id))
             .map((overlay) => ({ ...overlay, assetType: 'srt' })),
           ...selectedXmlOutputs
         ]
         if (selectedMedia.length === 0) return null
         const boundsLeft = Math.min(...selectedMedia.map((overlay) => overlay.left))
         const boundsRight = Math.max(...selectedMedia.map((overlay) => overlay.left + overlay.width))
-        const boundsTop = Math.min(...selectedMedia.map((overlay) => overlay.top))
+        const boundsTop = Math.min(...selectedMedia.map(getMediaToolbarTop))
+        const boundsBottom = Math.max(...selectedMedia.map((overlay) => overlay.top + overlay.height))
+        const toolbarPlacement = getFloatingToolbarPlacement({
+          left: boundsLeft,
+          right: boundsRight,
+          top: boundsTop,
+          bottom: boundsBottom
+        })
         const single = selectedMedia.length === 1
         const archiveUrl = single ? '' : archiveUrlForAssets(selectedMedia)
         const downloadSelectedMedia = async () => {
@@ -5848,7 +6194,7 @@ export default function App() {
         return (
           <div
             className="lovart-selection-toolbar"
-            style={{ left: `${Math.round((boundsLeft + boundsRight) / 2)}px`, top: `${Math.max(12, Math.round(boundsTop - 48))}px` }}
+            style={{ left: `${toolbarPlacement.left}px`, top: `${toolbarPlacement.top}px` }}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
           >
@@ -5902,7 +6248,7 @@ export default function App() {
               </button>
               {chatSendMenuOpen ? (
                 <div className="lovart-menu lovart-selection-chat-menu">
-                  {[['claude', 'Claude Code に添付'], ['codex', 'Codex へ（コピー+起動）'], ['', 'パスをコピーのみ']].map(([app, label]) => (
+                  {[['claude', 'Claude Code に添付'], ['codex', 'Codex に添付'], ['', 'パスをコピーのみ']].map(([app, label]) => (
                     <button
                       type="button"
                       key={app || 'copy'}
@@ -5912,7 +6258,13 @@ export default function App() {
                         sendToChatApp({
                           app,
                           text: '',
-                          assetUrls: selectedMedia.map((item) => item.assetUrl)
+                          assetUrls: selectedMedia.map((item) => item.assetUrl),
+                          assetItems: selectedMedia.map((item) => ({
+                            url: item.assetUrl,
+                            path: item.assetPath,
+                            kind: item.assetType,
+                            name: item.fileName
+                          }))
                         })
                       }}
                     >
@@ -7487,7 +7839,7 @@ export default function App() {
         ref={toolbarMediaInputRef}
         data-lovart-upload-input="toolbar-media"
         type="file"
-        accept="image/*,video/*"
+        accept="image/*,video/*,audio/*,.xml,.srt,.txt,.md,text/plain,text/markdown,application/xml,text/xml,application/x-subrip"
         multiple
         hidden
         onChange={onToolbarMediaInputChange}

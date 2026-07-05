@@ -1,8 +1,11 @@
+#!/usr/bin/env node
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import readline from "node:readline";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { generateKeyBetween } from "fractional-indexing";
 import { IMAGE_MODELS, VIDEO_MODELS, generateImageMedia, generateVideoMedia, getHermesStatus, runWithConcurrency, setupHermesGrok } from "../lib/mediaGeneration.mjs";
 import { getBuzzAssistAuthStatus, loginBuzzAssistViaBrowser } from "../lib/buzzassistApi.mjs";
@@ -20,9 +23,11 @@ import { silenceCutVideo } from "../lib/tempoCut.mjs";
 import { estimateCreditsForJob } from "../lib/mediaCredits.mjs";
 import { isFalImageModel, isFalVideoModel, previewFalImageRequest, previewFalVideoRequest } from "../lib/falMediaGeneration.mjs";
 import { generateSubtitleSrt, normalizeSubtitleHoldSeconds, renderSrt } from "../lib/subtitleGeneration.mjs";
+import { startChatBridgeWorker } from "../lib/chatBridge.mjs";
+import { readServerDiscovery } from "../lib/canvasServerRuntime.mjs";
 import { tmpdir } from "node:os";
 
-const SERVER_NAME = "Codex Excalidraw MCP";
+const SERVER_NAME = "BuzzAssist Excalidraw MCP";
 const SERVER_VERSION = "0.1.0";
 const TOOL_READ_ME = "read_me";
 const TOOL_CREATE_VIEW = "create_view";
@@ -46,26 +51,9 @@ const SELECTION_FILE_NAME = "excalidraw-selection.json";
 const ASSETS_ROUTE = "/excalidraw-assets/";
 const AI_HOLDER_KEY = "codexAiImageHolder";
 const MEDIA_GENERATION_AGENT_INSTRUCTIONS = [
-  "Read and update the project-local Excalidraw browser canvas.",
-  "Use read_me/create_view for official-compatible Excalidraw MCP drawing into the live local canvas.",
-  "Use get_excalidraw_selection for persisted browser selection and insert_excalidraw_image/insert_excalidraw_video for local assets.",
-  "When the user refers to canvas items they clicked or range-selected (これ, この画像, 選択したやつ, the selected video, etc.), call get_excalidraw_selection FIRST: each selected media element carries customData.codexAssetPath (local file path) and codexAssetUrl, so the selected images/videos/SRT files can be read directly or passed as generation inputs (start frame, reference images, subtitle audio, silence-cut video). Selection updates live as the user clicks on the canvas.",
-  "Use generate_excalidraw_image/generate_excalidraw_video for media generation. Local models: GPT-Image-2.0(Codex), Grok Imagine(Hermes). BuzzAssist cloud models (require buzzassist_login first): images nano-banana-2, gpt-image-2, seedream-v5-lite, grok-imagine-image-api; videos seedance-2, seedance-2-fast, kling-v3, kling-o3, kling-v2-6, grok-imagine-video-api.",
-  "Use buzzassist_auth_status to check BuzzAssist sign-in and buzzassist_login to sign in before using BuzzAssist cloud models, cloud subtitles, or when a tool reports missing login.",
-  "When the user asks to set up Hermes, or a Hermes-route generation fails with 'Hermes Agent was not found' or 'not logged in to xAI Grok OAuth', call setup_hermes_grok — it runs the browser OAuth (hermes auth add xai-oauth) so the user just approves in X.",
-  "Lovart models (require LOVART_ACCESS_KEY/LOVART_SECRET_KEY or ~/.lovart/credentials.json; billed in Lovart credits): images lovart-midjourney, lovart-flux-2-max, lovart-nano-banana-pro, lovart-ideogram-v4, lovart-agent (Lovart picks the model); videos lovart-veo-3-1, lovart-veo-3-1-fast, lovart-hailuo-2-3, lovart-kling-3-omni, lovart-wan-2-6. Lovart is prompt-driven: aspect ratio and duration are hints, not hard parameters.",
-  "Use generate_excalidraw_subtitles to create Japanese SRT subtitles from an audio file (scripted mode aligns a provided script, scriptless mode transcribes) and place an SRT card on the canvas. For scriptless audio prefer the two-step flow (returnWordsOnly → proofread the transcript and decide line breaks yourself → subtitleLines): you are the proofreader — fix homophones and conversion errors without changing what was said. When a video needs BOTH silence cutting and subtitles, always silence-cut first, then generate subtitles from the cut result.",
-  "Use silence_cut_excalidraw_video to remove silences from a Premiere XML or local video and write a non-destructive Premiere XML under canvas/assets; it does not render video or insert a result card.",
-  "Use generate_excalidraw_images_batch/generate_excalidraw_videos_batch when the user asks for many images, many videos, storyboard scenes, or batch media; prepare one jobs item per requested output and let the tool lay results out as a grid.",
-  "Generation tools REQUIRE confirmedSettings: true and reject the call otherwise (payloadPreview and ffmpeg-local silence-cut dryRun excepted). Before setting it, confirm the settings with the user via the host's AskUserQuestion/request_user_input mechanism — exactly like the BuzzAssist app — unless the user's own message already specified every one of them.",
-  "Required image settings to confirm when missing: model, 実行先 (execution route) when the model can run on more than one of Codex(local)/Hermes(local)/BuzzAssist API/Lovart, aspect ratio, and quality. Defaults to offer as Recommended are GPT-Image-2.0(Codex), 1:1, and Auto.",
-  "Required video settings to confirm when missing: model, 実行先 (execution route) when the model can run on more than one of Hermes(local)/BuzzAssist API/Lovart, aspect ratio, duration, and resolution. Defaults to offer as Recommended are Grok Imagine(Hermes), 16:9, 5 seconds, and 720p.",
-  "Before generating subtitles, confirm when missing: mode (scripted needs the script text; scriptless transcribes), lineCount (1 or 2), and maxCharsPerLine. Defaults to offer as Recommended are scriptless, 2 lines, 30 chars.",
-  "Before silence-cutting, confirm when missing: input type (Premiere XML preferred, or video), model (Recommended: elevenlabs-scribe-v2 for AI cleanup; ffmpeg-local only for offline threshold cuts), and for scribe the removal intensities (0/30/60/90, defaults filler 40/cough 0/retake 0). Output is Premiere XML only; do not promise a rendered video or a canvas result card.",
-  "The project-common 用語辞書 (canvas/subtitle-glossary.json, editable from the SRT panel's 用語 pill) is merged into every subtitle/scribe transcription automatically.",
-  "Canvas tools auto-start the local canvas server when it is not running. In Claude Code, open the canvas in the HOST'S IN-APP BROWSER instead of an external one: call preview_start with the 'canvas' config from .claude/launch.json. If preview_start reports the port is in use by another chat's server, do NOT take it over or edit ports — start the next config instead ('canvas-2', 'canvas-3', 'canvas-4'; ports 43219-43222). Every config serves the same shared project canvas, so each session gets its own in-app preview with identical content. Outside Claude Code the server opens a browser window once when no tab is connected (EXCALIDRAW_NO_AUTO_OPEN=1 disables).",
-  "When an attached or selected image/video could be used in more than one way, ask one disambiguation question before generation. For video, distinguish start frame/image-to-video from style reference; do not silently put the same media into multiple payload fields.",
-  "For choice questions, keep options short and mark the default with (Recommended) in English or （推奨） in Japanese. Do not ask when only one value is valid.",
+  "Project-local Excalidraw canvas tools. Use read_me/create_view for diagrams, get_excalidraw_selection before acting on selected items, and insert_* for local assets.",
+  "Generation/subtitle/silence-cut tools require confirmedSettings=true unless the user's request already specified all relevant settings; use payloadPreview or read_me for workflow details.",
+  "Canvas tools auto-start the local static canvas server and write canvas/.server.json with the dynamic URL and HTTP MCP bearer token.",
 ].join(" ");
 
 // Project-common 用語辞書 (canvas/subtitle-glossary.json) merges into every
@@ -106,18 +94,45 @@ async function addGlossarySuggestions(args, suggestions) {
 // the local canvas server if needed and open it once per MCP process.
 // Disable with EXCALIDRAW_NO_AUTO_OPEN=1.
 let canvasAutoOpenAttempted = false;
+let lastCanvasBaseUrl = null;
 
-async function fetchJsonQuick(url, timeoutMs = 1500) {
+async function fetchJsonQuick(url, timeoutMs = 1500, token = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const response = await fetch(url, { signal: controller.signal, headers });
     return response.ok ? await response.json() : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function resolveProjectDir(args = {}) {
+  const explicitProjectDir = nonEmptyString(args.projectDir);
+  if (explicitProjectDir) return pathResolve(explicitProjectDir);
+
+  const envProjectDir = nonEmptyString(process.env.EXCALIDRAW_PROJECT_DIR);
+  if (envProjectDir) return pathResolve(envProjectDir);
+
+  const canvasDir = resolveCanvasDir(args);
+  return basename(canvasDir) === "canvas" ? dirname(canvasDir) : process.cwd();
+}
+
+async function readCanvasServerInfo(args = {}) {
+  const discovered = await readServerDiscovery(resolveCanvasDir(args));
+  if (discovered?.url) return discovered;
+  const port = Number(process.env.EXCALIDRAW_PORT ?? 43219);
+  const url = nonEmptyString(process.env.EXCALIDRAW_CANVAS_URL) || `http://127.0.0.1:${port}/`;
+  return { url, mcpUrl: `${url.replace(/\/$/, "")}/mcp`, port, token: process.env.EXCALIDRAW_MCP_TOKEN || null };
+}
+
+async function fetchCanvasClientStatus(info) {
+  const baseUrl = String(info.url || "").replace(/\/$/, "");
+  if (!baseUrl) return null;
+  return fetchJsonQuick(`${baseUrl}/api/canvas-clients`, 1500, info.token);
 }
 
 function runQuick(command, commandArgs, timeoutMs = 8000) {
@@ -216,14 +231,14 @@ async function ensureCanvasVisible(args = {}) {
   canvasAutoOpenAttempted = true;
   if (/^(1|true|yes)$/i.test(String(process.env.EXCALIDRAW_NO_AUTO_OPEN || ""))) return;
   try {
-    const port = Number(process.env.EXCALIDRAW_PORT ?? 43219);
-    const baseUrl = nonEmptyString(process.env.EXCALIDRAW_CANVAS_URL) || `http://127.0.0.1:${port}`;
-    let status = await fetchJsonQuick(`${baseUrl}/api/canvas-clients`);
+    let info = await readCanvasServerInfo(args);
+    let baseUrl = String(info.url || "").replace(/\/$/, "");
+    let status = await fetchCanvasClientStatus(info);
     if (!status) {
       const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-      const child = spawn(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "dev"], {
+      const child = spawn(process.execPath, ["scripts/serve-canvas.mjs", resolveProjectDir(args)], {
         cwd: repoRoot,
-        env: { ...process.env, EXCALIDRAW_CANVAS_DIR: resolveCanvasDir(args) },
+        env: { ...process.env, EXCALIDRAW_CANVAS_DIR: resolveCanvasDir(args), EXCALIDRAW_PROJECT_DIR: resolveProjectDir(args) },
         detached: true,
         stdio: "ignore",
         shell: process.platform === "win32",
@@ -232,9 +247,12 @@ async function ensureCanvasVisible(args = {}) {
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline && !status) {
         await new Promise((resolveSleep) => setTimeout(resolveSleep, 1000));
-        status = await fetchJsonQuick(`${baseUrl}/api/canvas-clients`);
+        info = await readCanvasServerInfo(args);
+        baseUrl = String(info.url || "").replace(/\/$/, "");
+        status = await fetchCanvasClientStatus(info);
       }
     }
+    if (baseUrl) lastCanvasBaseUrl = baseUrl;
     if (status && Number(status.clients) === 0) {
       await openCanvasWindow(baseUrl);
     }
@@ -245,8 +263,8 @@ async function ensureCanvasVisible(args = {}) {
 
 function canvasHintText() {
   const port = Number(process.env.EXCALIDRAW_PORT ?? 43219);
-  const baseUrl = nonEmptyString(process.env.EXCALIDRAW_CANVAS_URL) || `http://127.0.0.1:${port}`;
-  return ` Canvas: ${baseUrl} — show it to the user now (in Claude Code, open it in the built-in preview via the 'canvas' config in .claude/launch.json; if that port is held by another session, use 'canvas-2'…'canvas-4' — every config serves the same shared canvas. Do not open an external browser).`;
+  const baseUrl = lastCanvasBaseUrl || nonEmptyString(process.env.EXCALIDRAW_CANVAS_URL) || `http://127.0.0.1:${port}`;
+  return ` Canvas: ${baseUrl}`;
 }
 
 // AskUserQuestion enforcement: generation tools refuse to run until the agent
@@ -282,21 +300,24 @@ function settingsConfirmationErrorText(kind) {
   );
 }
 
-const JsonRpcError = {
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-};
-
-function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
-}
-
-function sendResult(id, result) {
-  send({ jsonrpc: "2.0", id, result });
-}
-
-function sendError(id, code, message) {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
+function createProgressReporter(extra) {
+  const progressToken = extra?._meta?.progressToken;
+  if (progressToken === undefined || progressToken === null || typeof extra?.sendNotification !== "function") {
+    return () => {};
+  }
+  return (progress, total, message) => {
+    extra
+      .sendNotification({
+        method: "notifications/progress",
+        params: {
+          progressToken,
+          progress,
+          ...(total !== undefined ? { total } : {}),
+          ...(message ? { message } : {}),
+        },
+      })
+      .catch((error) => process.stderr.write(`[mcp-progress] failed: ${error?.message ?? String(error)}\n`));
+  };
 }
 
 function nonEmptyString(value) {
@@ -403,7 +424,7 @@ function normalizeScene(value) {
     return {
       type: "excalidraw",
       version: 2,
-      source: "codex-excalidraw-canvas",
+      source: "buzzassist-canvas",
       elements: [],
       appState: { viewBackgroundColor: "#ffffff" },
       files: {},
@@ -414,7 +435,7 @@ function normalizeScene(value) {
   return {
     type: value.type ?? "excalidraw",
     version: value.version ?? 2,
-    source: value.source ?? "codex-excalidraw-canvas",
+    source: value.source ?? "buzzassist-canvas",
     elements: restoreAssetBackedImageStatuses(value.elements, files),
     appState: value.appState && typeof value.appState === "object" ? value.appState : {},
     files,
@@ -1273,7 +1294,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_IMAGE,
       title: "Generate Excalidraw Image",
-      description: "Generate an image with GPT-Image-2.0(Codex) or Grok Imagine(Hermes), insert it into the canvas, and save the scene. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — model, 実行先 route when the model has several (e.g. GPT Image 2 → Codex/BuzzAssist/Lovart; Grok Imagine → Hermes/BuzzAssist), aspect ratio, and quality (Recommended: GPT-Image-2.0(Codex), 1:1, Auto). Skip asking only when the user's request already specified them. Calls without confirmedSettings=true are rejected (payloadPreview excepted; dryRun still runs the model, so it also needs confirmation). AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (use 'canvas-2'…'canvas-4' when the port is held by another session); otherwise share the URL.",
+      description: "Generate an image, insert it into the project canvas, and save the scene. Requires confirmedSettings=true unless using payloadPreview.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1303,7 +1324,7 @@ function toolDefinitions() {
           displayWidth: { type: "number" },
           displayHeight: { type: "number" },
           customData: { type: "object" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed the generation settings; payloadPreview is exempt." },
           dryRun: { type: "boolean" },
         },
         required: ["prompt"],
@@ -1319,7 +1340,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_VIDEO,
       title: "Generate Excalidraw Video",
-      description: "Generate a video with Grok Imagine(Hermes), insert a Youtube-AGI-style video media element into the canvas, and save the scene. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — model, 実行先 route when the model has several (e.g. Grok Imagine → Hermes/BuzzAssist; Kling → BuzzAssist/Lovart), aspect ratio, duration, and resolution (Recommended: Grok Imagine(Hermes), 16:9, 5s, 720p). Skip asking only when the user's request already specified them. Calls without confirmedSettings=true are rejected (payloadPreview excepted; dryRun still runs the model, so it also needs confirmation). AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (use 'canvas-2'…'canvas-4' when the port is held by another session); otherwise share the URL.",
+      description: "Generate a video, insert a media element into the project canvas, and save the scene. Requires confirmedSettings=true unless using payloadPreview.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1363,7 +1384,7 @@ function toolDefinitions() {
           displayWidth: { type: "number" },
           displayHeight: { type: "number" },
           customData: { type: "object" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed the generation settings; payloadPreview is exempt." },
           dryRun: { type: "boolean" },
         },
         required: ["prompt"],
@@ -1379,7 +1400,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_IMAGES_BATCH,
       title: "Generate Excalidraw Images (Batch)",
-      description: "Create Youtube-AGI-style image generator frames first, then generate many images with GPT-Image-2.0(Codex) or Grok Imagine(Hermes) and replace each frame as its result finishes. REQUIRED: confirm the batch settings with the user FIRST via one AskUserQuestion — model, 実行先 route when the model has several, aspect ratio, and quality. Calls without confirmedSettings=true are rejected (payloadPreview excepted; dryRun still runs the model, so it also needs confirmation). AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (use 'canvas-2'…'canvas-4' when the port is held by another session).",
+      description: "Create image generator frames, run many image jobs, and replace each frame as results finish. Requires confirmedSettings=true unless using payloadPreview.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1413,7 +1434,7 @@ function toolDefinitions() {
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
           focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to false; leave unset to avoid moving the user's current canvas view." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed the batch generation settings; payloadPreview is exempt." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },
         required: ["jobs"],
@@ -1429,7 +1450,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_VIDEOS_BATCH,
       title: "Generate Excalidraw Videos (Batch)",
-      description: "Create Youtube-AGI-style video generator frames first, then generate many videos with Grok Imagine(Hermes) and replace each frame as its result finishes. REQUIRED: confirm the batch settings with the user FIRST via one AskUserQuestion — model, 実行先 route when the model has several, aspect ratio, duration, and resolution. Calls without confirmedSettings=true are rejected (payloadPreview excepted; dryRun still runs the model, so it also needs confirmation). AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (use 'canvas-2'…'canvas-4' when the port is held by another session).",
+      description: "Create video generator frames, run many video jobs, and replace each frame as results finish. Requires confirmedSettings=true unless using payloadPreview.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1464,7 +1485,7 @@ function toolDefinitions() {
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           selectCreated: { type: "boolean", description: "Select the inserted elements after saving." },
           focusCreated: { type: "boolean", description: "Focus the canvas viewport on the newly created generator-frame grid. Defaults to false; leave unset to avoid moving the user's current canvas view." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed the batch generation settings; payloadPreview is exempt." },
           dryRun: { type: "boolean", description: "Generate without copying or saving." },
         },
         required: ["jobs"],
@@ -1480,7 +1501,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_SUBTITLES,
       title: "Generate Excalidraw Subtitles",
-      description: "Generate Japanese SRT subtitles from an audio file via BuzzAssist cloud (ElevenLabs forced alignment when a script is given, Scribe v2 otherwise), save the SRT under canvas/assets, and place an SRT card on the canvas. Requires buzzassist_login. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — mode (scripted vs scriptless), line count, and max chars per line. Calls without confirmedSettings=true are rejected (payloadPreview excepted; dryRun still runs the model, so it also needs confirmation). For best quality use the two-step LLM flow: call once with returnWordsOnly=true to get the transcript and timed words, PROOFREAD the transcript yourself (fix homophones/conversion errors/dropped chars, unify spelling; change notation only — never the spoken content), decide semantic line breaks (bunsetsu boundaries, maxCharsPerLine, 1-2 lines per cue), then call again with subtitleLines to render and place the SRT without a second cloud call. If the video will also be silence-cut, run the silence cut FIRST and generate subtitles from the CUT audio — cutting afterwards shifts every timestamp. AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (or 'canvas-2'…'canvas-4').",
+      description: "Generate Japanese SRT subtitles, save the SRT under canvas/assets, and place an SRT card on the canvas. Requires confirmedSettings=true.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1518,7 +1539,7 @@ function toolDefinitions() {
           anchorElementId: { type: "string", description: "Existing Excalidraw element id to place beside." },
           placement: { type: "string", enum: ["right", "left", "below", "replace", "inside"] },
           margin: { type: "number" },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed subtitle settings." },
           dryRun: { type: "boolean", description: "Generate the SRT without saving it to the canvas." },
         },
         additionalProperties: false,
@@ -1533,7 +1554,7 @@ function toolDefinitions() {
     {
       name: TOOL_GENERATE_SUBTITLES_BATCH,
       title: "Generate Excalidraw Subtitles (Batch)",
-      description: "Generate Japanese SRT subtitles for MANY audio/video files in one call (podcast series, multi-part recordings) and place one SRT card per job on the canvas. Shared settings (mode/lineCount/maxCharsPerLine/…) apply to every job; each job needs its own audioPath (video files OK — audio is extracted). Requires buzzassist_login. REQUIRED: confirm the shared settings with the user FIRST via one AskUserQuestion. Calls without confirmedSettings=true are rejected. AFTER completing, show the user the canvas in Claude Code's built-in preview: launch config 'canvas' (or 'canvas-2'…'canvas-4').",
+      description: "Generate Japanese SRT subtitles for many audio/video files and place one SRT card per job. Requires confirmedSettings=true.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1563,7 +1584,7 @@ function toolDefinitions() {
           normalizeAudio: { type: "boolean", description: "Loudness-normalize before transcription. Defaults to true." },
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the shared settings were confirmed with the user. Required; calls without it are rejected." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed the shared subtitle settings." },
         },
         required: ["jobs"],
         additionalProperties: false,
@@ -1578,7 +1599,7 @@ function toolDefinitions() {
     {
       name: TOOL_SILENCE_CUT_VIDEO,
       title: "Silence Cut Excalidraw Video",
-      description: "Jet-cut silences and output a NON-DESTRUCTIVE Premiere Pro XML (FCP7 xmeml) saved under canvas/assets — no rendering, no quality loss, instantly importable as a cut-applied sequence. Input is a Premiere XML by default/preference, or a video file. XML input must be a single video-track sequence; cuts are applied inside each timeline clip. model=elevenlabs-scribe-v2 is the Recommended main path: it transcribes via BuzzAssist (requires buzzassist_login, ~1 credit/min) and removes fillers, coughs, and retakes from word timestamps. model=ffmpeg-local is the offline fallback with an auto-calibrated noise-floor threshold. REQUIRED: confirm the settings with the user FIRST via one AskUserQuestion — input type, model, and, for scribe, the filler/cough/retake removal intensities. Calls without confirmedSettings=true are rejected (except ffmpeg-local dryRun cut-plan previews).",
+      description: "Remove silences and write a non-destructive Premiere Pro XML under canvas/assets. Requires confirmedSettings=true except ffmpeg-local dryRun previews.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1597,7 +1618,7 @@ function toolDefinitions() {
           fileName: { type: "string", description: "Destination .xml filename under canvas/assets/." },
           projectDir: { type: "string", description: "Absolute project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
-          confirmedSettings: { type: "boolean", description: "Attestation that the generation settings were confirmed with the user — via one AskUserQuestion, or already explicit in the user's request. Required; calls without it are rejected (payloadPreview and ffmpeg-local silence-cut dryRun excepted)." },
+          confirmedSettings: { type: "boolean", description: "True only after the user has confirmed silence-cut settings; ffmpeg-local dryRun is exempt." },
           dryRun: { type: "boolean", description: "Preview only: return the cut plan (ranges, candidates, durations) without writing the XML." },
         },
         required: ["videoPath"],
@@ -1906,7 +1927,7 @@ const CANVAS_AUTO_OPEN_TOOLS = new Set([
   TOOL_SILENCE_CUT_VIDEO,
 ]);
 
-async function handleToolCall(id, params) {
+async function handleToolCall(params, progress = () => {}) {
   const settingsGateKind = SETTINGS_CONFIRMATION_TOOLS.get(params?.name);
   if (settingsGateKind) {
     const gateArgs = params.arguments ?? {};
@@ -1917,21 +1938,23 @@ async function handleToolCall(id, params) {
       gateArgs.payloadPreview === true ||
       (settingsGateKind === "silenceCut" && gateArgs.dryRun === true && gateArgs.model === "ffmpeg-local");
     if (!gateArgs.confirmedSettings && !gateExempt) {
-      sendResult(id, {
+      return {
         content: [{ type: "text", text: settingsConfirmationErrorText(settingsGateKind) }],
         isError: true,
-      });
-      return;
+      };
     }
     delete gateArgs.confirmedSettings;
   }
   if (CANVAS_AUTO_OPEN_TOOLS.has(params?.name)) {
+    progress(0, 1, "Opening Excalidraw canvas");
     await ensureCanvasVisible(params.arguments ?? {});
   }
   if (params?.name === TOOL_GENERATE_SUBTITLES) {
+    progress(0, 2, "Generating subtitles");
     const result = await generateExcalidrawSubtitles(params.arguments ?? {});
     const extras = result.glossaryTermsAdded ? `+${result.glossaryTermsAdded} term(s) → 用語辞書` : "";
-    sendResult(id, {
+    progress(2, 2, "Subtitles complete");
+    return {
       content: [
         {
           type: "text",
@@ -1939,21 +1962,23 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GENERATE_SUBTITLES_BATCH) {
     const args = params.arguments ?? {};
     const jobs = Array.isArray(args.jobs) ? args.jobs : [];
     if (jobs.length === 0) {
-      sendError(id, JsonRpcError.INVALID_PARAMS, "jobs must contain at least one entry.");
-      return;
+      return {
+        content: [{ type: "text", text: "jobs must contain at least one entry." }],
+        isError: true,
+      };
     }
     const results = [];
     let succeeded = 0;
-    for (const job of jobs) {
+    for (const [index, job] of jobs.entries()) {
       try {
+        progress(index, jobs.length, `Generating subtitles ${index + 1}/${jobs.length}`);
         const merged = { ...args, ...job };
         delete merged.jobs;
         delete merged.returnWordsOnly;
@@ -1972,8 +1997,9 @@ async function handleToolCall(id, params) {
         results.push({ ok: false, audioPath: job.audioPath, error: error?.message || String(error) });
       }
     }
+    progress(jobs.length, jobs.length, "Subtitle batch complete");
     const failed = jobs.length - succeeded;
-    sendResult(id, {
+    return {
       content: [
         {
           type: "text",
@@ -1981,13 +2007,14 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: { ok: succeeded > 0, total: jobs.length, succeeded, failed, results },
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_SILENCE_CUT_VIDEO) {
+    progress(0, 1, "Building silence-cut XML");
     const result = await silenceCutExcalidrawVideo(params.arguments ?? {});
-    sendResult(id, {
+    progress(1, 1, "Silence-cut complete");
+    return {
       content: [
         {
           type: "text",
@@ -1995,30 +2022,27 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_BUZZASSIST_LOGIN) {
     const result = await handleBuzzAssistLogin(params.arguments ?? {});
-    sendResult(id, {
+    return {
       content: [{ type: "text", text: result.message }],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_SETUP_HERMES) {
     const before = await getHermesStatus();
     if (before.installed && before.session === "logged-in") {
-      sendResult(id, {
+      return {
         content: [{ type: "text", text: "Hermes is installed and already logged in to xAI Grok OAuth. The Hermes route is ready." }],
         structuredContent: { ...before, action: "already-logged-in" },
-      });
-      return;
+      };
     }
     const result = await setupHermesGrok();
-    sendResult(id, {
+    return {
       content: [
         {
           type: "text",
@@ -2029,8 +2053,7 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_BUZZASSIST_AUTH_STATUS) {
@@ -2040,24 +2063,22 @@ async function handleToolCall(id, params) {
       : status.expired
         ? "BuzzAssist login has expired. Run buzzassist_login."
         : "Not logged in to BuzzAssist. Run buzzassist_login.";
-    sendResult(id, {
+    return {
       content: [{ type: "text", text: summary }],
       structuredContent: status,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_READ_ME) {
-    sendResult(id, {
+    return {
       content: [{ type: "text", text: OFFICIAL_EXCALIDRAW_README }],
       structuredContent: { ok: true },
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_CREATE_VIEW) {
     const result = await createExcalidrawView(params.arguments ?? {});
-    sendResult(id, {
+    return {
       content: [
         {
           type: "text",
@@ -2065,8 +2086,7 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GET_SELECTION) {
@@ -2081,16 +2101,15 @@ async function handleToolCall(id, params) {
             .map((element) => `${element.id} [${element.type ?? "unknown"}] ${element.width ?? "?"}x${element.height ?? "?"}`)
             .join("\n");
 
-    sendResult(id, {
+    return {
       content: [{ type: "text", text: summary }],
       structuredContent: { selection, selectionFile, sceneFile: resolveCanvasFile(args), sceneElementCount: scene.elements.length },
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_INSERT_IMAGE) {
     const result = await insertExcalidrawImage(params.arguments ?? {});
-    sendResult(id, {
+    return {
       content: [
         {
           type: "text",
@@ -2098,13 +2117,12 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_INSERT_VIDEO) {
     const result = await insertExcalidrawVideo(params.arguments ?? {});
-    sendResult(id, {
+    return {
       content: [
         {
           type: "text",
@@ -2112,13 +2130,14 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GENERATE_IMAGE) {
+    progress(0, 1, "Generating image");
     const result = await generateExcalidrawImage(params.arguments ?? {});
-    sendResult(id, {
+    progress(1, 1, "Image generation complete");
+    return {
       content: [
         {
           type: "text",
@@ -2128,13 +2147,14 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GENERATE_VIDEO) {
+    progress(0, 1, "Generating video");
     const result = await generateExcalidrawVideo(params.arguments ?? {});
-    sendResult(id, {
+    progress(1, 1, "Video generation complete");
+    return {
       content: [
         {
           type: "text",
@@ -2144,13 +2164,14 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GENERATE_IMAGES_BATCH) {
+    progress(0, 1, "Generating image batch");
     const result = await generateExcalidrawImagesBatch(params.arguments ?? {});
-    sendResult(id, {
+    progress(1, 1, "Image batch complete");
+    return {
       content: [
         {
           type: "text",
@@ -2158,13 +2179,14 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
   if (params?.name === TOOL_GENERATE_VIDEOS_BATCH) {
+    progress(0, 1, "Generating video batch");
     const result = await generateExcalidrawVideosBatch(params.arguments ?? {});
-    sendResult(id, {
+    progress(1, 1, "Video batch complete");
+    return {
       content: [
         {
           type: "text",
@@ -2172,51 +2194,10 @@ async function handleToolCall(id, params) {
         },
       ],
       structuredContent: result,
-    });
-    return;
+    };
   }
 
-  sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
-}
-
-async function handleRequest(message) {
-  const { id, method, params } = message;
-
-  if (method === "initialize") {
-    sendResult(id, {
-      protocolVersion: params?.protocolVersion ?? "2025-11-25",
-      capabilities: { tools: {} },
-      serverInfo: {
-        name: SERVER_NAME,
-        version: SERVER_VERSION,
-      },
-      instructions: MEDIA_GENERATION_AGENT_INSTRUCTIONS,
-    });
-    return;
-  }
-
-  if (method === "ping") {
-    sendResult(id, {});
-    return;
-  }
-
-  if (method === "tools/list") {
-    sendResult(id, { tools: toolDefinitions() });
-    return;
-  }
-
-  if (method === "tools/call") {
-    try {
-      await handleToolCall(id, params);
-    } catch (error) {
-      sendError(id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
-    }
-    return;
-  }
-
-  if (id !== undefined) {
-    sendError(id, JsonRpcError.METHOD_NOT_FOUND, `Method not found: ${method}`);
-  }
+  throw new Error(`Unknown tool: ${params?.name ?? ""}`);
 }
 
 // Startup housekeeping (safe-only): migrate legacy inline file records and
@@ -2229,24 +2210,38 @@ performCanvasMaintenance({ safeOnly: true })
   })
   .catch((error) => process.stderr.write(`[canvas-maintenance] failed: ${error?.message}\n`));
 
-const lines = readline.createInterface({
-  input: process.stdin,
-  crlfDelay: Infinity,
-});
+// This process lives in the user's GUI session (spawned by Claude Code /
+// Codex), so it can run the osascript paste that the browser canvas and the
+// preview-jailed vite server cannot — execute their queued chat-send
+// requests (canvas/.chat-bridge/).
+try {
+  startChatBridgeWorker({ canvasDir: resolveCanvasDir() });
+} catch (error) {
+  process.stderr.write(`[chat-bridge] failed to start: ${error?.message}\n`);
+}
 
-lines.on("line", (line) => {
-  if (line.trim().length === 0) return;
+const server = new Server(
+  {
+    name: SERVER_NAME,
+    version: SERVER_VERSION,
+  },
+  {
+    capabilities: { tools: {} },
+    instructions: MEDIA_GENERATION_AGENT_INSTRUCTIONS,
+  },
+);
 
-  let message;
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDefinitions() }));
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
-    message = JSON.parse(line);
-  } catch {
-    return;
+    return await handleToolCall(request.params, createProgressReporter(extra));
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+      isError: true,
+    };
   }
-
-  handleRequest(message).catch((error) => {
-    if (message.id !== undefined) {
-      sendError(message.id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
-    }
-  });
 });
+
+const transport = new StdioServerTransport();
+await server.connect(transport);

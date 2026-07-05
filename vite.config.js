@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { createReadStream, createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream, constants as fsConstants } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -13,6 +13,7 @@ import { generateSubtitleSrt } from './lib/subtitleGeneration.mjs'
 import { silenceCutVideo } from './lib/tempoCut.mjs'
 import { getLovartAuthStatus, getLovartModelCosts, saveLovartCredentials } from './lib/lovartMediaGeneration.mjs'
 import { bridgeWorkerAlive, canDriveGui, pasteIntoChatApp, sendChatMessage } from './lib/chatBridge.mjs'
+import { getOrCreateMcpToken, rejectDisallowedOrigin, rejectMissingBearer, setLocalCorsHeaders, writeServerDiscovery } from './lib/canvasServerRuntime.mjs'
 import { tmpdir } from 'node:os'
 
 const projectDir = resolve(process.env.EXCALIDRAW_PROJECT_DIR ?? process.cwd())
@@ -23,6 +24,8 @@ const viewStateFile = join(canvasDir, 'excalidraw-view-state.json')
 const canvasAssetsDir = join(canvasDir, 'assets')
 const canvasAssetsRoute = '/excalidraw-assets/'
 const defaultPort = Number(process.env.EXCALIDRAW_PORT ?? 43219)
+const defaultHost = process.env.EXCALIDRAW_HOST || '127.0.0.1'
+const mcpToken = getOrCreateMcpToken()
 
 const mimeTypes = new Map([
   ['.apng', 'image/apng'],
@@ -37,8 +40,18 @@ const mimeTypes = new Map([
   ['.mov', 'video/quicktime'],
   ['.mp4', 'video/mp4'],
   ['.webm', 'video/webm'],
+  ['.aac', 'audio/aac'],
+  ['.flac', 'audio/flac'],
+  ['.m4a', 'audio/mp4'],
+  ['.mp3', 'audio/mpeg'],
+  ['.ogg', 'audio/ogg'],
+  ['.opus', 'audio/opus'],
+  ['.wav', 'audio/wav'],
   ['.xml', 'application/xml'],
-  ['.srt', 'application/x-subrip']
+  ['.srt', 'application/x-subrip'],
+  ['.md', 'text/markdown; charset=utf-8'],
+  ['.markdown', 'text/markdown; charset=utf-8'],
+  ['.txt', 'text/plain; charset=utf-8']
 ])
 
 const canvasEventClients = new Set()
@@ -70,6 +83,45 @@ function readRequestBody(req) {
 function isSafeChildPath(parent, child) {
   const pathToChild = relative(parent, child)
   return pathToChild && !pathToChild.startsWith('..') && !pathToChild.includes(`..${sep}`)
+}
+
+function sanitizeAssetFileName(name, fallbackName = 'asset.bin') {
+  const fallback = basename(String(fallbackName || 'asset.bin')) || 'asset.bin'
+  const rawName = basename(String(name || fallback))
+    .normalize('NFC')
+    .replace(/[\\/]/g, '_')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+  if (!rawName || rawName === '.' || rawName === '..') return fallback
+  return rawName
+}
+
+async function resolveAvailableCanvasAssetPath(requestedName, options = {}) {
+  const safeName = sanitizeAssetFileName(requestedName)
+  const sourcePath = options.sourcePath ? resolve(String(options.sourcePath)) : ''
+  const directPath = resolve(canvasAssetsDir, safeName)
+  if (sourcePath && directPath === sourcePath && isSafeChildPath(canvasAssetsDir, directPath)) {
+    return { fileName: safeName, filePath: directPath }
+  }
+
+  const ext = extname(safeName)
+  const base = safeName.slice(0, safeName.length - ext.length)
+  let candidate = safeName
+  let counter = 1
+  while (true) {
+    const filePath = resolve(canvasAssetsDir, candidate)
+    if (!isSafeChildPath(canvasAssetsDir, filePath)) {
+      throw new Error(`Unsafe asset filename: ${candidate}`)
+    }
+    try {
+      await stat(filePath)
+      candidate = `${base} (${counter})${ext}`
+      counter += 1
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { fileName: candidate, filePath }
+      throw error
+    }
+  }
 }
 
 function isScene(value) {
@@ -332,6 +384,7 @@ function mcpToolDefinitions() {
           displayWidth: { type: 'number' },
           displayHeight: { type: 'number' },
           customData: { type: 'object' },
+          confirmedSettings: { type: 'boolean', description: 'True only after the user has confirmed generation settings.' },
           dryRun: { type: 'boolean' }
         },
         required: ['imagePath'],
@@ -391,6 +444,7 @@ function mcpToolDefinitions() {
           displayWidth: { type: 'number' },
           displayHeight: { type: 'number' },
           customData: { type: 'object' },
+          confirmedSettings: { type: 'boolean', description: 'True only after the user has confirmed generation settings.' },
           dryRun: { type: 'boolean' }
         },
         required: ['prompt'],
@@ -457,6 +511,10 @@ function mcpToolResponse(text, structuredContent) {
 
 async function callLocalMcpTool(name, args = {}) {
   const localArgs = { ...(args && typeof args === 'object' ? args : {}), canvasDir }
+  if ((name === TOOL_GENERATE_IMAGE || name === TOOL_GENERATE_VIDEO) && localArgs.confirmedSettings !== true) {
+    throw new Error('Settings not confirmed. Confirm model, route, aspect ratio, and quality/duration/resolution before calling this generation tool with confirmedSettings=true.')
+  }
+  delete localArgs.confirmedSettings
 
   if (name === TOOL_READ_ME) {
     return mcpToolResponse(OFFICIAL_EXCALIDRAW_README, { ok: true })
@@ -501,7 +559,7 @@ async function callLocalMcpTool(name, args = {}) {
       ...localArgs,
       mediaBuffer: media.buffer,
       mimeType: media.mimeType,
-      fileName: localArgs.fileName || localArgs.imageName || localArgs.image_name || media.fileName,
+      fileName: localArgs.fileName || localArgs.imageName || localArgs.image_name,
       customData: {
         codexGeneratedImage: true,
         codexGenerationModel: media.model,
@@ -527,7 +585,7 @@ async function callLocalMcpTool(name, args = {}) {
       ...localArgs,
       mediaBuffer: media.buffer,
       mimeType: media.mimeType,
-      fileName: localArgs.fileName || localArgs.videoName || localArgs.video_name || media.fileName,
+      fileName: localArgs.fileName || localArgs.videoName || localArgs.video_name,
       aspectRatio: localArgs.aspectRatio ?? localArgs.aspect_ratio,
       duration: localArgs.duration,
       prompt: localArgs.prompt,
@@ -589,10 +647,8 @@ async function serveMcp(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1')
   if (url.pathname !== '/mcp') return false
 
-  res.setHeader('access-control-allow-origin', '*')
-  res.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS')
-  res.setHeader('access-control-allow-headers', 'Content-Type, Accept, Authorization, Mcp-Session-Id')
-  res.setHeader('access-control-expose-headers', 'Mcp-Session-Id')
+  if (rejectDisallowedOrigin(req, res, { port: defaultPort })) return true
+  setLocalCorsHeaders(req, res, { port: defaultPort })
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204
@@ -606,10 +662,13 @@ async function serveMcp(req, res) {
       version: MCP_SERVER_VERSION,
       endpoint: '/mcp',
       canvasUrl: `http://127.0.0.1:${defaultPort}/`,
+      auth: { type: 'bearer', env: 'EXCALIDRAW_MCP_TOKEN', discovery: `${canvasDir}/.server.json` },
       tools: mcpToolDefinitions().map((tool) => tool.name)
     })
     return
   }
+
+  if (rejectMissingBearer(req, res, mcpToken)) return true
 
   if (req.method === 'DELETE') {
     sendJson(res, 200, { ok: true })
@@ -653,42 +712,60 @@ async function readProjectGlossary() {
   }
 }
 
-function canvasStoragePlugin() {
-  return {
-    name: 'codex-excalidraw-storage',
-    configureServer(server) {
-      // safeOnly: never move subtitle cards or trash assets on startup — only
-      // the invisible health tasks (which are no-ops in a healthy scene).
-      performCanvasMaintenance({ canvasDir, safeOnly: true })
-        .then((results) => {
-          const { migration, tmpCleanup, orphans } = results
-          if (migration?.migrated || migration?.dropped || tmpCleanup?.removed || orphans?.trashed) {
-            console.log(
-              `[canvas-maintenance] migrated=${migration?.migrated ?? 0} (${Math.round((migration?.migratedBytes ?? 0) / 1024)}KB) ` +
-                `droppedRecords=${migration?.dropped ?? 0} tmpRemoved=${tmpCleanup?.removed ?? 0} ` +
-                `orphansTrashed=${orphans?.trashed ?? 0} (${Math.round((orphans?.trashedBytes ?? 0) / 1024 / 1024)}MB)`
-            )
-          }
-        })
-        .catch((error) => console.warn('[canvas-maintenance] failed:', error.message))
-      server.middlewares.use(async (req, res, next) => {
-        try {
-          if (await serveMcp(req, res)) return
-          next()
-        } catch (error) {
-          sendJson(res, 500, { error: error.message })
-        }
-      })
-      server.middlewares.use(serveCanvasAsset)
-      server.watcher.add(canvasFile)
-      let canvasWatchTimer = null
-      server.watcher.on('change', (changedPath) => {
-        if (resolve(changedPath) !== canvasFile) return
-        clearTimeout(canvasWatchTimer)
-        canvasWatchTimer = setTimeout(() => {
-          broadcastCanvasChanged([canvasFile])
-        }, 120)
-      })
+async function writeCurrentServerDiscovery(server) {
+  const address = server.httpServer?.address?.()
+  const port = typeof address === 'object' && address ? address.port : defaultPort
+  await writeServerDiscovery({
+    canvasDir,
+    projectDir,
+    host: defaultHost,
+    port,
+    token: mcpToken
+  })
+}
+
+function configureCanvasServer(server) {
+  server.httpServer?.once?.('listening', () => {
+    writeCurrentServerDiscovery(server).catch((error) => console.warn('[server-discovery] failed:', error.message))
+  })
+  // safeOnly: never move subtitle cards or trash assets on startup — only
+  // the invisible health tasks (which are no-ops in a healthy scene).
+  performCanvasMaintenance({ canvasDir, safeOnly: true })
+    .then((results) => {
+      const { migration, tmpCleanup, orphans } = results
+      if (migration?.migrated || migration?.dropped || tmpCleanup?.removed || orphans?.trashed) {
+        console.log(
+          `[canvas-maintenance] migrated=${migration?.migrated ?? 0} (${Math.round((migration?.migratedBytes ?? 0) / 1024)}KB) ` +
+            `droppedRecords=${migration?.dropped ?? 0} tmpRemoved=${tmpCleanup?.removed ?? 0} ` +
+            `orphansTrashed=${orphans?.trashed ?? 0} (${Math.round((orphans?.trashedBytes ?? 0) / 1024 / 1024)}MB)`
+        )
+      }
+    })
+    .catch((error) => console.warn('[canvas-maintenance] failed:', error.message))
+  server.middlewares.use((req, res, next) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())) {
+      if (rejectDisallowedOrigin(req, res, { port: defaultPort })) return
+    }
+    next()
+  })
+  server.middlewares.use(async (req, res, next) => {
+    try {
+      if (await serveMcp(req, res)) return
+      next()
+    } catch (error) {
+      sendJson(res, 500, { error: error.message })
+    }
+  })
+  server.middlewares.use(serveCanvasAsset)
+  server.watcher.add(canvasFile)
+  let canvasWatchTimer = null
+  server.watcher.on('change', (changedPath) => {
+    if (resolve(changedPath) !== canvasFile) return
+    clearTimeout(canvasWatchTimer)
+    canvasWatchTimer = setTimeout(() => {
+      broadcastCanvasChanged([canvasFile])
+    }, 120)
+  })
 
       // Bulk download: zips requested canvas assets as a streaming STORE
       // archive. GET supports direct browser downloads; POST is kept for
@@ -981,7 +1058,7 @@ function canvasStoragePlugin() {
             canvasDir,
             mediaBuffer: media.buffer,
             mimeType: media.mimeType,
-            fileName: body.fileName || media.fileName,
+            fileName: body.fileName,
             anchorElementId: body.anchorElementId,
             sourceElementId: body.sourceElementId,
             placement: body.placement,
@@ -1034,7 +1111,7 @@ function canvasStoragePlugin() {
             canvasDir,
             mediaBuffer: media.buffer,
             mimeType: media.mimeType,
-            fileName: body.fileName || media.fileName,
+            fileName: body.fileName || body.videoName,
             anchorElementId: body.anchorElementId,
             sourceElementId: body.sourceElementId,
             placement: body.placement,
@@ -1109,7 +1186,7 @@ function canvasStoragePlugin() {
               kind: 'image',
               mediaBuffer: media.buffer,
               mimeType: media.mimeType,
-              fileName: job.fileName || media.fileName,
+              fileName: job.fileName,
               customData: {
                 codexGeneratedImage: true,
                 codexGenerationModel: media.model,
@@ -1200,7 +1277,7 @@ function canvasStoragePlugin() {
               kind: 'video',
               mediaBuffer: media.buffer,
               mimeType: media.mimeType,
-              fileName: job.fileName || media.fileName,
+              fileName: job.fileName || job.videoName,
               aspectRatio: job.aspectRatio ?? job.aspect_ratio,
               duration: job.duration,
               customData: {
@@ -1301,6 +1378,19 @@ function canvasStoragePlugin() {
         }
       })
 
+      // TEMP diagnostic: verify this server process can reach fal storage.
+      server.middlewares.use('/api/debug/outbound', async (req, res) => {
+        try {
+          const { uploadBufferToFalStorage } = await import('./lib/buzzassistApi.mjs')
+          const url = new URL(req.url, 'http://127.0.0.1')
+          const mb = Math.max(0.25, Math.min(64, Number(url.searchParams.get('mb')) || 0.25))
+          const uploaded = await uploadBufferToFalStorage(Buffer.alloc(Math.round(mb * 1024 * 1024), 7), { mimeType: 'application/octet-stream', fileName: 'probe.bin' })
+          sendJson(res, 200, { ok: true, mb, url: uploaded.slice(0, 60) })
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: error.message, cause: error.cause?.message || String(error.cause || '') })
+        }
+      })
+
       server.middlewares.use('/api/hermes/status', async (req, res) => {
         try {
           sendJson(res, 200, await getHermesStatus())
@@ -1357,15 +1447,28 @@ function canvasStoragePlugin() {
           const appName = body.app === 'codex' ? 'Codex' : body.app === 'claude' ? 'Claude' : ''
           const note = typeof body.text === 'string' ? body.text.trim() : ''
           const assetUrls = Array.isArray(body.assetUrls) ? body.assetUrls : []
-          const assetPaths = assetUrls
-            .map((url) => {
-              try {
-                return localAssetFilePathFromUrl(new URL(String(url), 'http://127.0.0.1').pathname)
-              } catch {
-                return null
-              }
+          const assetItems = Array.isArray(body.assetItems) ? body.assetItems : []
+          const resolveClientAssetPath = (item) => {
+            if (item && typeof item === 'object' && typeof item.path === 'string' && item.path) {
+              const directPath = resolve(item.path)
+              if (isSafeChildPath(canvasAssetsDir, directPath)) return directPath
+            }
+            const rawUrl = item && typeof item === 'object' ? (item.url || item.assetUrl) : item
+            if (!rawUrl) return null
+            try {
+              return localAssetFilePathFromUrl(new URL(String(rawUrl), 'http://127.0.0.1').pathname)
+            } catch {
+              return null
+            }
+          }
+          const seenAssetPaths = new Set()
+          const assetPaths = [...assetItems, ...assetUrls]
+            .map(resolveClientAssetPath)
+            .filter((filePath) => {
+              if (!filePath || seenAssetPaths.has(filePath)) return false
+              seenAssetPaths.add(filePath)
+              return true
             })
-            .filter(Boolean)
           const message = [note, ...assetPaths].filter(Boolean).join('\n')
           if (!message) {
             sendJson(res, 400, { error: '送る内容がありません。' })
@@ -1599,19 +1702,16 @@ function canvasStoragePlugin() {
           const body = JSON.parse(await readRequestBody(req))
           const sourcePath = resolve(String(body.sourcePath ?? ''))
           const requestedName = basename(String(body.fileName || basename(sourcePath) || 'asset'))
-          const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-')
-          const destinationPath = resolve(canvasAssetsDir, safeName)
-          if (!isSafeChildPath(canvasAssetsDir, destinationPath)) {
-            sendJson(res, 403, { error: 'Unsafe destination path.' })
-            return
-          }
+          const { fileName, filePath: destinationPath } = await resolveAvailableCanvasAssetPath(requestedName, { sourcePath })
 
           await mkdir(canvasAssetsDir, { recursive: true })
-          await copyFile(sourcePath, destinationPath)
+          if (destinationPath !== sourcePath) {
+            await copyFile(sourcePath, destinationPath)
+          }
           sendJson(res, 200, {
             ok: true,
             path: destinationPath,
-            url: `${canvasAssetsRoute}${encodeURIComponent(safeName)}`
+            url: `${canvasAssetsRoute}${encodeURIComponent(fileName)}`
           })
         } catch (error) {
           sendJson(res, 500, { error: error.message })
@@ -1634,12 +1734,7 @@ function canvasStoragePlugin() {
           const streamFilenameHeader = req.headers['x-upload-filename']
           if (streamFilenameHeader) {
             const requestedName = basename(decodeURIComponent(String(streamFilenameHeader)))
-            const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-') || `asset-${Date.now()}`
-            const destinationPath = resolve(canvasAssetsDir, safeName)
-            if (!isSafeChildPath(canvasAssetsDir, destinationPath)) {
-              sendJson(res, 403, { error: 'Unsafe destination path.' })
-              return
-            }
+            const { fileName, filePath: destinationPath } = await resolveAvailableCanvasAssetPath(requestedName || `asset-${Date.now()}`)
             await mkdir(canvasAssetsDir, { recursive: true })
             await new Promise((resolveWrite, rejectWrite) => {
               const out = createWriteStream(destinationPath)
@@ -1651,8 +1746,8 @@ function canvasStoragePlugin() {
             sendJson(res, 200, {
               ok: true,
               path: destinationPath,
-              url: `${canvasAssetsRoute}${encodeURIComponent(safeName)}`,
-              mimeType: req.headers['content-type'] || mimeTypes.get(extname(safeName).toLowerCase()) || 'application/octet-stream'
+              url: `${canvasAssetsRoute}${encodeURIComponent(fileName)}`,
+              mimeType: req.headers['content-type'] || mimeTypes.get(extname(fileName).toLowerCase()) || 'application/octet-stream'
             })
             return
           }
@@ -1673,25 +1768,48 @@ function canvasStoragePlugin() {
             }
 
             const requestedName = basename(String(formData.get('fileName') || file.name || `asset-${Date.now()}`))
-            const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-')
-            const destinationPath = resolve(canvasAssetsDir, safeName)
-            if (!isSafeChildPath(canvasAssetsDir, destinationPath)) {
-              sendJson(res, 403, { error: 'Unsafe destination path.' })
-              return
-            }
+            const { fileName, filePath: destinationPath } = await resolveAvailableCanvasAssetPath(requestedName)
 
             await mkdir(canvasAssetsDir, { recursive: true })
             await writeFile(destinationPath, Buffer.from(await file.arrayBuffer()))
             sendJson(res, 200, {
               ok: true,
               path: destinationPath,
-              url: `${canvasAssetsRoute}${encodeURIComponent(safeName)}`,
-              mimeType: file.type || mimeTypes.get(extname(safeName).toLowerCase()) || 'application/octet-stream'
+              url: `${canvasAssetsRoute}${encodeURIComponent(fileName)}`,
+              mimeType: file.type || mimeTypes.get(extname(fileName).toLowerCase()) || 'application/octet-stream'
             })
             return
           }
 
           const body = JSON.parse(await readRequestBody(req))
+
+          // Local-path import: when the webview exposes the picked file's
+          // path (Electron), skip the HTTP transfer entirely and clone the
+          // file on disk — APFS copy-on-write makes multi-GB attach instant.
+          if (typeof body.sourcePath === 'string' && body.sourcePath) {
+            const sourcePath = resolve(String(body.sourcePath))
+            const sourceStat = await stat(sourcePath).catch(() => null)
+            if (!sourceStat?.isFile()) {
+              sendJson(res, 400, { error: 'ソースファイルが見つかりません。' })
+              return
+            }
+            const requestedName = basename(String(body.fileName || sourcePath))
+            const { fileName, filePath: destinationPath } = await resolveAvailableCanvasAssetPath(requestedName || `asset-${Date.now()}`, { sourcePath })
+            await mkdir(canvasAssetsDir, { recursive: true })
+            if (destinationPath !== sourcePath) {
+              // FICLONE clones instantly on APFS; falls back to a real copy on
+              // other filesystems (still no HTTP round-trip).
+              await copyFile(sourcePath, destinationPath, fsConstants.COPYFILE_FICLONE)
+            }
+            sendJson(res, 200, {
+              ok: true,
+              path: destinationPath,
+              url: `${canvasAssetsRoute}${encodeURIComponent(fileName)}`,
+              mimeType: mimeTypes.get(extname(fileName).toLowerCase()) || 'application/octet-stream'
+            })
+            return
+          }
+
           const dataUrl = String(body.dataURL ?? '')
           const match = dataUrl.match(/^data:([^;,]+)?(?:;[^,]*)?;base64,(.+)$/s)
           if (!match) {
@@ -1700,12 +1818,7 @@ function canvasStoragePlugin() {
           }
 
           const requestedName = basename(String(body.fileName || `asset-${Date.now()}`))
-          const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-')
-          const destinationPath = resolve(canvasAssetsDir, safeName)
-          if (!isSafeChildPath(canvasAssetsDir, destinationPath)) {
-            sendJson(res, 403, { error: 'Unsafe destination path.' })
-            return
-          }
+          const { fileName, filePath: destinationPath } = await resolveAvailableCanvasAssetPath(requestedName)
 
           await mkdir(canvasAssetsDir, { recursive: true })
           const buffer = Buffer.from(match[2], 'base64')
@@ -1713,14 +1826,20 @@ function canvasStoragePlugin() {
           sendJson(res, 200, {
             ok: true,
             path: destinationPath,
-            url: `${canvasAssetsRoute}${encodeURIComponent(safeName)}`,
+            url: `${canvasAssetsRoute}${encodeURIComponent(fileName)}`,
             mimeType: match[1] || 'application/octet-stream'
           })
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }
       })
-    }
+}
+
+export function canvasStoragePlugin() {
+  return {
+    name: 'codex-excalidraw-storage',
+    configureServer: configureCanvasServer,
+    configurePreviewServer: configureCanvasServer
   }
 }
 

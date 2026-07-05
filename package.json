@@ -1,16 +1,55 @@
 {
-  "name": "codex-excalidraw-canvas",
+  "name": "buzzassist-canvas-mcp",
   "version": "0.1.0",
-  "private": true,
+  "description": "BuzzAssist project-local Excalidraw canvas with stdio and HTTP MCP tools for Codex and Claude Code.",
+  "homepage": "https://github.com/taiyuhiga/BuzzAssist",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/taiyuhiga/BuzzAssist.git"
+  },
   "type": "module",
+  "bin": {
+    "buzzassist-canvas-mcp": "mcp/server.mjs",
+    "buzzassist-canvas": "scripts/serve-canvas.mjs",
+    "excalidraw-canvas-mcp": "mcp/server.mjs",
+    "excalidraw-canvas": "scripts/serve-canvas.mjs"
+  },
+  "files": [
+    "assets/",
+    ".codex-plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    ".mcp.json",
+    "dist/",
+    "lib/*.mjs",
+    "mcp/server.mjs",
+    "scripts/*.mjs",
+    "scripts/*.sh",
+    "skills/",
+    "./AGENTS.md",
+    "./CLAUDE.md",
+    "./README.md",
+    "./SETUP.md",
+    "package-lock.json",
+    "vite.config.js"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
+    "serve": "node scripts/serve-canvas.mjs",
+    "setup:agents": "node scripts/setup-agents.mjs",
+    "mcp": "node mcp/server.mjs",
+    "preview": "node scripts/serve-canvas.mjs",
+    "test": "node --test test/*.test.mjs && node scripts/test-fal-payloads.mjs",
+    "prepack": "npm run build",
     "postinstall": "node scripts/patch-excalidraw.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vitejs/plugin-react": "^5.0.0",
     "fractional-indexing": "^3.2.0",
     "kuromoji": "^0.1.2",

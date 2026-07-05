@@ -176,6 +176,15 @@ body {
   overflow: hidden;
 }
 
+.lovart-image-header-kind {
+  flex: 0 0 auto;
+  color: #667085;
+  font-size: 0.9em;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
 .lovart-image-header-name-text {
   overflow: hidden;
   text-overflow: ellipsis;

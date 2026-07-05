@@ -1,19 +1,22 @@
 ---
 name: excalidraw-video-gen
-description: Generate or insert a video into the local Codex Excalidraw canvas. Use when the user asks to create, place, or generate a video on the Excalidraw canvas using Grok Imagine(Hermes) or BuzzAssist cloud models (Seedance 2, Seedance 2 Fast, Kling v3, Kling o3, Kling v2.6, Grok Imagine API), or Lovart models (Veo 3.1, Hailuo 2.3, Kling 3.0 Omni, Wan 2.6).
+description: Generate or insert a video into the local BuzzAssist canvas. Use when the user asks to create, place, or generate a video on the Excalidraw canvas using Grok Imagine(Hermes) or BuzzAssist cloud models (Seedance 2, Seedance 2 Fast, Kling v3, Kling o3, Kling v2.6, Grok Imagine API), or Lovart models (Veo 3.1, Hailuo 2.3, Kling 3.0 Omni, Wan 2.6).
 ---
 
 # Excalidraw Video Gen
 
-Use this skill when the user wants a generated video represented on the Codex Excalidraw canvas.
+Use this skill when the user wants a generated video represented on the BuzzAssist canvas.
 
 ## Preconditions
 
-The Excalidraw service should be running for the active project, usually at:
+The Excalidraw service should be running for the active project. The default
+URL is usually:
 
 ```text
 http://127.0.0.1:43219
 ```
+
+If that port is busy, read `canvas/.server.json` for the live `url`.
 
 Grok Imagine(Hermes) requires Hermes Agent and xAI OAuth:
 
@@ -36,13 +39,7 @@ BuzzAssist cloud models (`seedance-2`, `seedance-2-fast`, `kling-v3`, `kling-o3`
 
 ## Workflow
 
-1. Read the selection:
-
-```bash
-curl -s http://127.0.0.1:43219/api/selection
-```
-
-Use the MCP `get_excalidraw_selection` tool when available.
+1. Read the selection with the MCP `get_excalidraw_selection` tool.
 
 2. Generate and place the video with `generate_excalidraw_video`:
 

@@ -9,7 +9,7 @@ Use this skill when the user wants SRT subtitles generated from audio and placed
 
 ## Preconditions
 
-- The Excalidraw canvas service should be running (default `http://127.0.0.1:43219`).
+- The Excalidraw canvas service should be running; read `canvas/.server.json` if the default port was busy.
 - BuzzAssist login is required. Check with the MCP `buzzassist_auth_status` tool; sign in with `buzzassist_login` (opens a browser).
 - `ffprobe` is used to probe audio duration when `durationSeconds` is not given.
 

@@ -1,0 +1,20 @@
+{
+  "name": "buzzassist-local",
+  "interface": {
+    "displayName": "BuzzAssist Local"
+  },
+  "plugins": [
+    {
+      "name": "buzzassist",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

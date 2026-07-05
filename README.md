@@ -1,12 +1,39 @@
-# Codex Excalidraw
+# BuzzAssist
 
-Codex Excalidraw is a local Excalidraw canvas for Codex and Claude Code, modeled after Cowart's architecture:
+BuzzAssist is a local Excalidraw canvas and media MCP plugin for Codex and Claude Code, modeled after Cowart's architecture:
 
 - official Excalidraw MCP App access through `https://mcp.excalidraw.com/mcp`
-- a local Vite/React canvas service
+- a local static React canvas service
 - project-local canvas persistence under `canvas/`
 - MCP tools for Codex to read selection state, insert assets, and generate images/videos
-- Codex skills for opening the canvas and placing generated media
+- Codex and Claude Code plugin manifests with shared skills
+
+## Agent URL Setup
+
+This repo is designed so a user can pass the GitHub URL to Codex or Claude Code
+and say "set it up." The agent should clone/open the repo and run:
+
+```text
+https://github.com/taiyuhiga/BuzzAssist
+```
+
+```bash
+node scripts/setup-agents.mjs --project-dir /path/to/active/project
+```
+
+The setup script installs dependencies when needed, builds the canvas UI when
+needed, refreshes a lightweight local plugin source at `~/plugins/buzzassist`,
+installs `buzzassist@personal` into Codex, installs
+`buzzassist@buzzassist-local` into Claude Code, starts the local canvas server,
+and prints:
+
+```text
+BUZZASSIST_CANVAS_URL=http://127.0.0.1:<port>/
+```
+
+After that, the current host agent should open the printed URL in its in-app
+browser. If browser control is unavailable, use the URL from
+`canvas/.server.json`.
 
 ## Run The Canvas
 
@@ -16,12 +43,23 @@ Codex Excalidraw is a local Excalidraw canvas for Codex and Claude Code, modeled
 
 # any OS (Windows included)
 node scripts/start-canvas.mjs /path/to/user/project
+
+# after packaging / install
+npx buzzassist-canvas-mcp
+npx buzzassist-canvas /path/to/user/project
 ```
 
-Default URL:
+Default URL, when available:
 
 ```text
 http://127.0.0.1:43219/
+```
+
+If that port is already busy, the canvas server selects the next available
+local port and writes the live URL, HTTP MCP URL, and bearer token to:
+
+```text
+canvas/.server.json
 ```
 
 Project-local data:
@@ -38,8 +76,11 @@ canvas/assets/
 This plugin includes two Excalidraw MCP entries:
 
 - `excalidraw_official`: the official open-source Excalidraw MCP App hosted by Excalidraw, useful for prompt-to-diagram generation and MCP App rendering
-- `excalidraw_mcp`: this repository's local project-bound HTTP MCP endpoint, served by the same browser canvas process at `http://127.0.0.1:43219/mcp`
-- `excalidraw_mcp_stdio`: fallback stdio MCP server for clients that cannot connect to the local browser canvas HTTP endpoint
+- `excalidraw_mcp`: this repository's local project-bound stdio MCP server. It auto-starts the browser canvas when needed.
+
+The local stdio MCP runs on `@modelcontextprotocol/sdk`, so initialization,
+tool listing/calling, protocol negotiation, and `notifications/progress` are
+handled by the SDK rather than a hand-written JSON-RPC loop.
 
 The official remote MCP is configured in `.mcp.json` as:
 
@@ -50,24 +91,28 @@ The official remote MCP is configured in `.mcp.json` as:
 }
 ```
 
-The local browser canvas MCP is configured in `.mcp.json` as:
+The local MCP is configured in `.mcp.json` as:
 
 ```json
 {
-  "type": "http",
-  "url": "http://127.0.0.1:43219/mcp"
+  "command": "node",
+  "args": ["./mcp/server.mjs"],
+  "cwd": "."
 }
 ```
 
-Start the canvas first:
+The stdio MCP starts the canvas automatically for canvas-writing tools. To open
+the canvas manually:
 
 ```bash
 ./scripts/start-canvas.sh /path/to/user/project
 ```
 
-Then MCP clients can connect to `http://127.0.0.1:43219/mcp`. Tool calls update the same canvas shown at `http://127.0.0.1:43219/` and the browser refreshes through the existing canvas event stream.
+The local HTTP MCP endpoint is still served by the browser canvas process at
+`/mcp`, but it is token-protected. Read `canvas/.server.json` for the current
+`mcpUrl` and bearer `token`.
 
-For clients that need stdio instead of HTTP:
+For clients that need a direct stdio command:
 
 ```bash
 ./scripts/start-mcp.sh
@@ -95,6 +140,29 @@ Generation extras:
 - `generate_excalidraw_subtitles` supports a two-step LLM segmentation flow: call with `returnWordsOnly: true` to get timed words, let the agent decide semantic line breaks, then call again with `subtitleLines` to render and place the SRT without a second cloud call
 - 429 responses retry automatically with backoff; payload builders are covered by `node scripts/test-fal-payloads.mjs`
 
+## Plugin Packaging
+
+Codex uses `.codex-plugin/plugin.json`; Claude Code uses
+`.claude-plugin/plugin.json`. Both manifests point at the shared `skills/`
+folder and `.mcp.json`, so skills and MCP config are no longer duplicated under
+tool-specific folders.
+
+For Codex local testing, `.agents/plugins/marketplace.json` exposes this repo
+as `buzzassist`. For npm packaging, `package.json` provides:
+
+```bash
+npx buzzassist-canvas-mcp   # stdio MCP server
+npx buzzassist-canvas       # local canvas web server
+```
+
+Run the verification suite before packaging:
+
+```bash
+npm test
+npm run build
+npm pack --dry-run
+```
+
 ## Batch Generation
 
 Generate many images or videos in one call. The MCP batch tools first place Youtube-AGI-style generator frames as a grid below existing canvas content, keep the user's current canvas view in place by default, then run jobs with bounded concurrency and replace each frame as its media result finishes.
@@ -118,6 +186,10 @@ Each endpoint runs the batch, saves the scene once, broadcasts a single live-can
 ## Codex Agent Clarifications
 
 When a Codex agent uses the Excalidraw MCP media tools, the MCP server instructions tell it to ask before generating if required media settings are missing instead of silently guessing defaults. Use the host AskUserQuestion/request_user_input flow for those questions.
+
+The server also enforces this gate. Generation, subtitle, and paid silence-cut
+tools reject calls without `confirmedSettings: true`, except for payload
+previews and offline ffmpeg-local dry runs.
 
 - Image generation should confirm missing model, aspect ratio, and quality. Recommended defaults: `GPT-Image-2.0(Codex)`, `1:1`, `Auto`.
 - Video generation should confirm missing model, aspect ratio, duration, and resolution. Recommended defaults: `Grok Imagine(Hermes)`, `16:9`, `5s`, `720p`.
@@ -155,14 +227,14 @@ images: lovart-midjourney  lovart-flux-2-max  lovart-nano-banana-pro  lovart-ide
 videos: lovart-veo-3-1  lovart-veo-3-1-fast  lovart-hailuo-2-3  lovart-kling-3-omni  lovart-wan-2-6
 ```
 
-Auth: set `LOVART_ACCESS_KEY` / `LOVART_SECRET_KEY`, or put `access_key` / `secret_key` in `~/.lovart/credentials.json` (0600). Requests are HMAC-SHA256 signed against `https://lgw.lovart.ai/v1/openapi` (`lib/lovartMediaGeneration.mjs`). Generation is prompt-driven (aspect ratio / duration are hints); results are billed in Lovart credits, generated inside a dedicated "Codex Excalidraw" Lovart project, and downloaded onto the canvas. High-cost confirmations are auto-approved by default (`autoConfirmCredits: false` to require explicit approval).
+Auth: set `LOVART_ACCESS_KEY` / `LOVART_SECRET_KEY`, or put `access_key` / `secret_key` in `~/.lovart/credentials.json` (0600). Requests are HMAC-SHA256 signed against `https://lgw.lovart.ai/v1/openapi` (`lib/lovartMediaGeneration.mjs`). Generation is prompt-driven (aspect ratio / duration are hints); results are billed in Lovart credits, generated inside a dedicated "BuzzAssist Excalidraw" Lovart project, and downloaded onto the canvas. High-cost confirmations are auto-approved by default (`autoConfirmCredits: false` to require explicit approval).
 
 ## BuzzAssist Sign-In
 
 Cloud models, cloud subtitles, and their credits use your BuzzAssist account:
 
 - MCP: run the `buzzassist_login` tool (opens the browser, loopback callback), check with `buzzassist_auth_status`
-- HTTP: `GET/POST http://127.0.0.1:43219/api/buzzassist/login`, status at `/api/buzzassist/auth-status`
+- HTTP: `GET/POST <canvas-url>/api/buzzassist/login`, status at `/api/buzzassist/auth-status`
 - CI/headless: set `BUZZASSIST_MEDIA_TOKEN` with a desktop auth token
 
 Tokens are desktop-app auth tokens (30-day TTL) stored at `~/.buzzassist/excalidraw-media-auth.json`. Credits are reserved and refunded server-side by the BuzzAssist proxy; failed generations refund automatically.
@@ -193,7 +265,7 @@ Maintenance: both servers run `performCanvasMaintenance` at startup (`lib/canvas
 
 ## Claude Code
 
-The same repo works as-is in Claude Code: `.mcp.json` registers the MCP servers, and the skills are mirrored under `.claude/skills/`. Start the canvas with `./scripts/start-canvas.sh`, then use the same MCP tools from Claude Code sessions.
+The same repo works as-is in Claude Code: `.claude-plugin/plugin.json` and `.mcp.json` register the shared skills and MCP server. Start the canvas with `./scripts/start-canvas.sh`, then use the same MCP tools from Claude Code sessions.
 
 `grok-imagine-image-hermes` and `grok-imagine-video-hermes` use the local Hermes Agent xAI OAuth flow:
 

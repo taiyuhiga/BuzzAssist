@@ -1,19 +1,22 @@
 ---
 name: excalidraw-image-gen
-description: Generate or insert a bitmap into the local Codex Excalidraw canvas. Use when the user asks to create, fill, replace, or place an AI-generated image on the Excalidraw canvas using GPT Image 2(Codex), Grok Imagine(Hermes), or BuzzAssist cloud models (Nano Banana 2, GPT Image 2 API, Seedream 5.0 Lite, Grok Imagine API — require the buzzassist_login MCP tool), or Lovart models (Midjourney, Flux.2 Max, Nano Banana Pro, Ideogram 4 — require LOVART_ACCESS_KEY/SECRET_KEY or ~/.lovart/credentials.json).
+description: Generate or insert a bitmap into the local BuzzAssist canvas. Use when the user asks to create, fill, replace, or place an AI-generated image on the Excalidraw canvas using GPT Image 2(Codex), Grok Imagine(Hermes), or BuzzAssist cloud models (Nano Banana 2, GPT Image 2 API, Seedream 5.0 Lite, Grok Imagine API — require the buzzassist_login MCP tool), or Lovart models (Midjourney, Flux.2 Max, Nano Banana Pro, Ideogram 4 — require LOVART_ACCESS_KEY/SECRET_KEY or ~/.lovart/credentials.json).
 ---
 
 # Excalidraw Image Gen
 
-Use this skill when the user wants an image placed onto the Codex Excalidraw canvas.
+Use this skill when the user wants an image placed onto the BuzzAssist canvas.
 
 ## Preconditions
 
-The Excalidraw service should be running for the active project, usually at:
+The Excalidraw service should be running for the active project. The default
+URL is usually:
 
 ```text
 http://127.0.0.1:43219
 ```
+
+If that port is busy, read `canvas/.server.json` for the live `url`.
 
 AI holders are rectangle elements with:
 
@@ -38,13 +41,7 @@ AI holders are rectangle elements with:
 
 ## Workflow
 
-1. Read the selection:
-
-```bash
-curl -s http://127.0.0.1:43219/api/selection
-```
-
-Use the MCP `get_excalidraw_selection` tool when available.
+1. Read the selection with the MCP `get_excalidraw_selection` tool.
 
 2. If exactly one selected element is an AI holder, use its `width` and `height` as the target generation and display size.
 
