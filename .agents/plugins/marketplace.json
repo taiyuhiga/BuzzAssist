@@ -1,7 +1,7 @@
 {
-  "name": "buzzassist-local",
+  "name": "buzzassist",
   "interface": {
-    "displayName": "BuzzAssist Local"
+    "displayName": "BuzzAssist MCP"
   },
   "plugins": [
     {

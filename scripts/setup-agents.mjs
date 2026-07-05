@@ -8,7 +8,8 @@ import { homedir } from "node:os";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginName = "buzzassist";
-const marketplaceName = "buzzassist-local";
+const marketplaceName = "buzzassist";
+const legacyMarketplaceName = "buzzassist-local";
 const personalMarketplaceName = "personal";
 const homeDir = homedir();
 const managedPluginDir = join(homeDir, "plugins", pluginName);
@@ -110,14 +111,16 @@ async function run(command, args, options = {}) {
     inherit = false,
     allowFailure = false,
     timeoutMs = 0,
+    log = true,
+    silent = false,
   } = options;
 
   if (dryRun) {
-    logCommand(command, args);
+    if (log) logCommand(command, args);
     return { ok: true, code: 0, stdout: "", stderr: "" };
   }
 
-  logCommand(command, args);
+  if (log) logCommand(command, args);
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(command, args, {
       cwd,
@@ -152,8 +155,8 @@ async function run(command, args, options = {}) {
     child.on("close", (code) => {
       if (timeout) clearTimeout(timeout);
       const ok = code === 0;
-      if (!inherit && stdout.trim()) console.log(stdout.trim());
-      if (!inherit && stderr.trim()) console.error(stderr.trim());
+      if (!inherit && !silent && stdout.trim()) console.log(stdout.trim());
+      if (!inherit && !silent && stderr.trim()) console.error(stderr.trim());
       const result = { ok, code, stdout, stderr, timedOut };
       if (ok || allowFailure) resolveRun(result);
       else rejectRun(new Error(timedOut ? `${formatCommand(command, args)} timed out` : `${formatCommand(command, args)} exited with ${code}`));
@@ -244,7 +247,7 @@ async function refreshManagedPluginSource() {
   await writeJson(join(tmpDir, ".claude-plugin", "marketplace.json"), {
     $schema: "https://anthropic.com/claude-code/marketplace.schema.json",
     name: marketplaceName,
-    description: "BuzzAssist canvas and media MCP plugin for Claude Code and Codex.",
+    description: "BuzzAssist MCP canvas and media plugin for Claude Code and Codex.",
     owner: { name: "higataiyu" },
     metadata: {
       description: "A project-local Excalidraw canvas, shared skills, and MCP tools for visual media workflows.",
@@ -254,7 +257,7 @@ async function refreshManagedPluginSource() {
         name: pluginName,
         version: "0.1.0",
         source: "./plugin",
-        description: "BuzzAssist canvas and media MCP tools for Claude Code and Codex.",
+        description: "BuzzAssist MCP canvas and media tools for Claude Code and Codex.",
         author: { name: "higataiyu" },
         category: "productivity",
       },
@@ -266,7 +269,7 @@ async function refreshManagedPluginSource() {
   await rm(join(tmpPluginRoot, ".claude-plugin", "marketplace.json"), { force: true });
   await writeJson(join(tmpDir, ".agents", "plugins", "marketplace.json"), {
     name: marketplaceName,
-    interface: { displayName: "BuzzAssist Local" },
+    interface: { displayName: "BuzzAssist MCP" },
     plugins: [
       {
         name: pluginName,
@@ -285,13 +288,28 @@ async function refreshManagedPluginSource() {
   return managedPluginRoot;
 }
 
-async function ensureCodexPersonalMarketplace(pluginDir) {
-  logStep("Updating Codex personal marketplace");
+async function removeCodexPersonalMarketplaceEntry() {
+  const marketplace = await readJson(personalMarketplacePath, null);
+  if (!marketplace || !Array.isArray(marketplace.plugins)) return;
+  const plugins = marketplace.plugins.filter((plugin) => plugin?.name !== pluginName);
+  if (plugins.length === marketplace.plugins.length) return;
+
+  if (dryRun) {
+    console.log(`Would remove ${pluginName} from ${personalMarketplacePath}`);
+    return;
+  }
+
+  marketplace.plugins = plugins;
+  await writeJson(personalMarketplacePath, marketplace);
+}
+
+async function setupCodexMarketplace(codex) {
+  logStep("Configuring Codex marketplace");
   const entry = {
     name: pluginName,
     source: {
       source: "local",
-      path: `./plugins/${pluginName}/plugin`,
+      path: "./plugin",
     },
     policy: {
       installation: "AVAILABLE",
@@ -301,25 +319,48 @@ async function ensureCodexPersonalMarketplace(pluginDir) {
   };
 
   if (dryRun) {
-    console.log(`Would write ${personalMarketplacePath}`);
-    console.log(`Would point ${pluginName} to ${pluginDir}`);
+    console.log(`Would register ${managedPluginDir} as the ${marketplaceName} marketplace`);
     return;
   }
 
-  const marketplace = await readJson(personalMarketplacePath, {
-    name: personalMarketplaceName,
-    interface: { displayName: "Personal" },
+  const localMarketplacePath = join(managedPluginDir, ".agents", "plugins", "marketplace.json");
+  const marketplace = await readJson(localMarketplacePath, {
+    name: marketplaceName,
+    interface: { displayName: "BuzzAssist MCP" },
     plugins: [],
   });
-  marketplace.name ||= personalMarketplaceName;
-  marketplace.interface ||= { displayName: "Personal" };
+  marketplace.name = marketplaceName;
+  marketplace.interface ||= { displayName: "BuzzAssist MCP" };
+  marketplace.interface.displayName = "BuzzAssist MCP";
   marketplace.plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
 
   const index = marketplace.plugins.findIndex((plugin) => plugin?.name === pluginName);
   if (index >= 0) marketplace.plugins[index] = entry;
   else marketplace.plugins.push(entry);
 
-  await writeJson(personalMarketplacePath, marketplace);
+  await writeJson(localMarketplacePath, marketplace);
+
+  const added = await run(codex, ["plugin", "marketplace", "add", managedPluginDir], { allowFailure: true });
+  if (!added.ok) {
+    console.warn("Codex marketplace add did not complete. Continuing to plugin install in case it is already configured.");
+  }
+}
+
+async function cleanupLegacyCodex(codex) {
+  const listed = await run(codex, ["plugin", "list"], { allowFailure: true, log: false, silent: true });
+  if (listed.stdout.includes(`${pluginName}@${personalMarketplaceName}`)) {
+    await run(codex, ["plugin", "remove", `${pluginName}@${personalMarketplaceName}`], { allowFailure: true });
+  }
+  if (listed.stdout.includes(`${pluginName}@${legacyMarketplaceName}`)) {
+    await run(codex, ["plugin", "remove", `${pluginName}@${legacyMarketplaceName}`], { allowFailure: true });
+  }
+
+  await removeCodexPersonalMarketplaceEntry();
+
+  const marketplaces = await run(codex, ["plugin", "marketplace", "list"], { allowFailure: true, log: false, silent: true });
+  if (marketplaces.stdout.includes(legacyMarketplaceName)) {
+    await run(codex, ["plugin", "marketplace", "remove", legacyMarketplaceName], { allowFailure: true });
+  }
 }
 
 async function setupCodex(pluginDir) {
@@ -327,17 +368,34 @@ async function setupCodex(pluginDir) {
   const codex = commandName("codex");
   if (!(await commandAvailable(codex))) {
     console.warn("Codex CLI was not found. Run these commands after installing Codex:");
-    console.warn(`  ${formatCommand("codex", ["plugin", "add", `${pluginName}@${personalMarketplaceName}`])}`);
+    console.warn(`  ${formatCommand("codex", ["plugin", "marketplace", "add", managedPluginDir])}`);
+    console.warn(`  ${formatCommand("codex", ["plugin", "add", `${pluginName}@${marketplaceName}`])}`);
     return { ok: false, skipped: true };
   }
 
-  await ensureCodexPersonalMarketplace(pluginDir);
+  await cleanupLegacyCodex(codex);
+  await setupCodexMarketplace(codex);
 
-  const installed = await run(codex, ["plugin", "add", `${pluginName}@${personalMarketplaceName}`], { allowFailure: true });
+  const installed = await run(codex, ["plugin", "add", `${pluginName}@${marketplaceName}`], { allowFailure: true });
   if (!installed.ok) {
     console.warn("Codex plugin install did not complete. Check the Codex CLI output above.");
   }
   return { ok: installed.ok };
+}
+
+async function cleanupLegacyClaude(claude) {
+  const listed = await run(claude, ["plugin", "list"], { allowFailure: true, log: false, silent: true });
+  if (listed.stdout.includes(`${pluginName}@${legacyMarketplaceName}`)) {
+    await run(claude, ["plugin", "uninstall", `${pluginName}@${legacyMarketplaceName}`, "--scope", "user", "-y"], {
+      allowFailure: true,
+      timeoutMs: 180000,
+    });
+  }
+
+  const marketplaces = await run(claude, ["plugin", "marketplace", "list"], { allowFailure: true, log: false, silent: true });
+  if (marketplaces.stdout.includes(legacyMarketplaceName)) {
+    await run(claude, ["plugin", "marketplace", "remove", legacyMarketplaceName, "--scope", "user"], { allowFailure: true });
+  }
 }
 
 async function setupClaude(pluginDir) {
@@ -349,6 +407,8 @@ async function setupClaude(pluginDir) {
     console.warn(`  ${formatCommand("claude", ["plugin", "install", `${pluginName}@${marketplaceName}`, "--scope", "user"])}`);
     return { ok: false, skipped: true };
   }
+
+  await cleanupLegacyClaude(claude);
 
   const added = await run(claude, ["plugin", "marketplace", "add", managedPluginDir, "--scope", "user"], { allowFailure: true });
   if (!added.ok) {

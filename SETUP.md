@@ -18,9 +18,9 @@ What the script does:
 - builds the static canvas UI when needed
 - refreshes a lightweight local marketplace at `~/plugins/buzzassist`
 - stores the actual plugin root at `~/plugins/buzzassist/plugin`
-- installs `buzzassist@personal` into Codex
-- registers `~/plugins/buzzassist` as the `buzzassist-local` marketplace for Claude Code
-- installs `buzzassist@buzzassist-local` into Claude Code
+- registers `~/plugins/buzzassist` as the `buzzassist` marketplace
+- installs `buzzassist@buzzassist` into Codex
+- installs `buzzassist@buzzassist` into Claude Code
 - starts the local canvas service and prints `BUZZASSIST_CANVAS_URL=...`
 
 If the setup is triggered from Claude Code, Codex is still configured. If it is triggered from Codex, Claude Code is still configured.

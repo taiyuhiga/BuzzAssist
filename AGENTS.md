@@ -25,8 +25,9 @@ Manual fallback:
 ```bash
 node scripts/setup-agents.mjs --project-dir <active-user-project-dir> --no-launch
 claude plugin marketplace add ~/plugins/buzzassist --scope user
-claude plugin install buzzassist@buzzassist-local --scope user
-codex plugin add buzzassist@personal
+claude plugin install buzzassist@buzzassist --scope user
+codex plugin marketplace add ~/plugins/buzzassist
+codex plugin add buzzassist@buzzassist
 node scripts/serve-canvas.mjs <active-user-project-dir>
 ```
 

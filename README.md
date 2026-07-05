@@ -1,6 +1,6 @@
 # BuzzAssist
 
-BuzzAssist is a local Excalidraw canvas and media MCP plugin for Codex and Claude Code, modeled after Cowart's architecture:
+BuzzAssist MCP is a local Excalidraw canvas and media plugin for Codex and Claude Code, modeled after Cowart's architecture:
 
 - official Excalidraw MCP App access through `https://mcp.excalidraw.com/mcp`
 - a local static React canvas service
@@ -24,8 +24,8 @@ node scripts/setup-agents.mjs --project-dir /path/to/active/project
 The setup script installs dependencies when needed, builds the canvas UI when
 needed, refreshes a lightweight local marketplace at `~/plugins/buzzassist`
 with the plugin root at `~/plugins/buzzassist/plugin`, installs
-`buzzassist@personal` into Codex, installs
-`buzzassist@buzzassist-local` into Claude Code, starts the local canvas server,
+`buzzassist@buzzassist` into Codex, installs
+`buzzassist@buzzassist` into Claude Code, starts the local canvas server,
 and prints:
 
 ```text
