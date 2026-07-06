@@ -877,6 +877,7 @@ async function generateExcalidrawVideo(args = {}) {
     startFramePath: args.startFramePath ?? args.start_frame_path,
     referenceImagePaths: args.referenceImagePaths ?? args.reference_image_paths,
     referenceVideoPaths: args.referenceVideoPaths ?? args.reference_video_paths,
+    referenceAudioPaths: args.referenceAudioPaths ?? args.reference_audio_paths,
     referenceVideos: args.referenceVideos ?? args.reference_videos,
   });
   return insertExcalidrawVideoMedia({
@@ -1387,7 +1388,7 @@ function toolDefinitions() {
           },
           mode: { type: "string", enum: ["standard", "pro"], description: "Kling quality mode. Defaults to standard." },
           endFramePath: { type: "string", description: "Optional local image path for keyframe end-frame interpolation (Seedance/Kling only)." },
-          referenceAudioPaths: { type: "array", items: { type: "string" }, description: "Optional local audio reference paths (Seedance reference mode only)." },
+          referenceAudioPaths: { type: "array", items: { type: "string" }, description: "Optional local audio reference paths for video reference mode when supported by the selected route." },
           useMotion: { type: "boolean", description: "Kling v2.6 motion-control mode. Requires startFramePath and one referenceVideoPaths entry." },
           useReference: { type: "boolean", description: "Force reference mode when references are attached." },
           motionOrientation: { type: "string", enum: ["image", "video"], description: "Kling v2.6 motion character orientation. Defaults to image." },
