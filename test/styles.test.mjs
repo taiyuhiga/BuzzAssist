@@ -30,20 +30,18 @@ test("generator chrome stays below native Excalidraw toolbar and above backdrop"
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
   const nativeToolbarSelectors = [
     ".lovart-ai-root .excalidraw .layer-ui__wrapper",
+    ".lovart-ai-root .excalidraw .FixedSideContainer",
+    ".lovart-ai-root .excalidraw .App-bottom-bar",
     ".lovart-ai-root .excalidraw .App-menu",
     ".lovart-ai-root .excalidraw .dropdown-menu",
     ".lovart-ai-root .excalidraw [class*=\"popover\"]"
   ];
   for (const selector of nativeToolbarSelectors) {
-    assert.equal(zIndexForSelector(css, selector), 40, `${selector} should stay above generator chrome`);
+    assert.equal(zIndexForSelector(css, selector), 120, `${selector} should stay above generator chrome`);
   }
-  assert.doesNotMatch(
-    css,
-    /\.lovart-ai-root\s+\.excalidraw\s+\.FixedSideContainer/,
-    "FixedSideContainer covers prompt menus when forced above the generator panel",
-  );
 
   const backdrop = zIndexForSelector(css, ".lovart-menu-backdrop");
+  const rail = zIndexForSelector(css, ".lovart-ai-rail");
   const panel = zIndexForSelector(css, ".lovart-ai-panel");
   const menu = zIndexForSelector(css, ".lovart-menu");
   const menuWrap = zIndexForSelector(css, ".lovart-menu-wrap");
@@ -53,11 +51,10 @@ test("generator chrome stays below native Excalidraw toolbar and above backdrop"
   const videoFrameTray = zIndexForSelector(css, ".lovart-prompt-wrap.has-video-menu .lovart-video-frame-tray");
   const videoSettings = zIndexForSelector(css, ".lovart-video-settings");
   const utilityMenu = zIndexForSelector(css, ".lovart-menu.lovart-utility-pop");
-  const chatAttachBar = zIndexForSelector(css, ".lovart-chat-attach-bar");
 
   assert.equal(backdrop, 20);
+  assert.equal(rail, 120);
   assert.equal(panel, 30);
-  assert.equal(chatAttachBar, 30);
   assert.equal(menu, 40);
   assert.equal(menuWrap, 30);
   assert.equal(videoMenuWrap, 40);
@@ -67,8 +64,11 @@ test("generator chrome stays below native Excalidraw toolbar and above backdrop"
   assert.equal(utilityMenu, 100);
   assert.equal(slotButton, 101);
   assert.ok(backdrop < panel);
-  assert.ok(chatAttachBar < menu);
   assert.ok(panel < menu);
   assert.ok(menu < slotMenu);
   assert.ok(slotMenu < slotButton);
+  assert.ok(slotButton < rail);
+  for (const selector of nativeToolbarSelectors) {
+    assert.ok(slotButton < zIndexForSelector(css, selector), `${selector} should cover generator menus`);
+  }
 });

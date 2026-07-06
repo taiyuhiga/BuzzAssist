@@ -51,6 +51,11 @@ const SAVE_DELAY_MS = 450
 const SELECTION_DELAY_MS = 180
 const CANVAS_ASSETS_ROUTE = '/excalidraw-assets/'
 const ASSET_HYDRATION_CONCURRENCY = 6
+const OVERLAY_RENDER_MARGIN = 320
+const FRAME_OVERLAY_MAX_ITEMS = 320
+const MEDIA_HEADER_OVERLAY_MAX_ITEMS = 320
+const VIDEO_PLAYBACK_OVERLAY_MAX_ITEMS = 120
+const SUBTITLE_PREVIEW_OVERLAY_MAX_ITEMS = 120
 const ATTACHMENT_CARD_WIDTH = 320
 const ATTACHMENT_CARD_HEIGHT = 180
 const COLLAPSED_FREEDRAW_MAX_DIMENSION = 1
@@ -363,14 +368,17 @@ function getVideoDurationRange(model) {
 
 function getAvailableVideoTabs(model) {
   model = resolveGatingVideoModel(model)
-  if (model === 'kling-v2-6') return ['keyframe', 'motion']
-  if (model === 'kling-v3') return ['keyframe']
-  return ['keyframe', 'reference']
+  return ['keyframe', model === 'kling-v2-6' || model === 'kling-v3' ? 'motion' : 'reference']
+}
+
+function isVideoTabDisabledForModel(model, tab) {
+  model = resolveGatingVideoModel(model)
+  return model === 'kling-v3' && tab === 'motion'
 }
 
 function normalizeVideoTabForModel(model, value) {
   const tabs = getAvailableVideoTabs(model)
-  return tabs.includes(value) ? value : 'keyframe'
+  return tabs.includes(value) && !isVideoTabDisabledForModel(model, value) ? value : 'keyframe'
 }
 
 function normalizeVideoDurationForModel(model, value) {
@@ -403,11 +411,8 @@ function normalizeVideoAspectRatioForModel(model, value) {
   return allowed.includes(value) ? value : '16:9'
 }
 
-// Audio reference is only meaningful for models that consume an audio track
-// (Seedance family in the reference). For the default Grok model it is hidden,
-// matching Youtube-AGI and keeping the panel to image+video references.
 function supportsAudioReference(model) {
-  return /seedance/i.test(String(model || ''))
+  return model === 'seedance-2' || model === 'seedance-2-fast'
 }
 
 function getVideoFrameSlotMediaKind(tab, target) {
@@ -557,6 +562,25 @@ function assetFileNameFromUrl(assetUrl) {
   }
 }
 
+function canvasLeafFileName(value) {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return ''
+  const withoutQuery = trimmed.split('?')[0].split('#')[0]
+  const normalized = withoutQuery.replace(/\\/g, '/')
+  const leaf = normalized.split('/').filter(Boolean).pop() || ''
+  if (!leaf) return ''
+  try {
+    return decodeURIComponent(leaf)
+  } catch {
+    return leaf
+  }
+}
+
+function canvasLeafFileNameFromAssetUrl(value) {
+  return canvasLeafFileName(assetFileNameFromUrl(value))
+}
+
 function getCanvasPickTargetFromEventTarget(target) {
   let node = target
   while (node) {
@@ -693,6 +717,7 @@ function FileUploadLabel({ accept, multiple = false, className = '', title, onOp
         accept={accept}
         multiple={multiple}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, opacity: 0, cursor: 'pointer' }}
+        onClick={(event) => { event.stopPropagation(); onOpen?.() }}
         onChange={onChange}
       />
       {children}
@@ -1496,6 +1521,30 @@ function isViewportPlacementNearViewport(placement, appState = {}, margin = 128)
   )
 }
 
+function shouldBuildViewportOverlay(placement, appState, selectedIds, id, margin = OVERLAY_RENDER_MARGIN) {
+  return selectedIds.has(id) || isViewportPlacementNearViewport(placement, appState, margin)
+}
+
+function overlayDistanceFromViewportCenter(overlay, appState) {
+  const { width, height } = viewportSize(appState)
+  const dx = (Number(overlay.left) || 0) + (Number(overlay.width) || 0) / 2 - width / 2
+  const dy = (Number(overlay.top) || 0) + (Number(overlay.height) || 0) / 2 - height / 2
+  return dx * dx + dy * dy
+}
+
+function limitViewportOverlays(overlays, appState, maxItems) {
+  if (!Number.isFinite(maxItems) || overlays.length <= maxItems) return overlays
+  const selected = []
+  const rest = []
+  for (const overlay of overlays) {
+    if (overlay?.isSelected) selected.push(overlay)
+    else rest.push(overlay)
+  }
+  if (selected.length >= maxItems) return selected
+  rest.sort((a, b) => overlayDistanceFromViewportCenter(a, appState) - overlayDistanceFromViewportCenter(b, appState))
+  return selected.concat(rest.slice(0, maxItems - selected.length))
+}
+
 function getPanelPlacementFromViewportTarget(target, kind = 'image') {
   const isVideo = kind === true || kind === 'video'
   const frameViewportWidth = Math.max(1, Number(target?.width) || 1)
@@ -1721,61 +1770,6 @@ function normalizeCanvasAssetUrl(value) {
   }
 }
 
-function isElementAfterInScene(element, reference, elements) {
-  if (!element || !reference) return false
-  const elementIndex = typeof element.index === 'string' ? element.index : ''
-  const referenceIndex = typeof reference.index === 'string' ? reference.index : ''
-  if (elementIndex && referenceIndex && elementIndex !== referenceIndex) {
-    return elementIndex > referenceIndex
-  }
-  const referencePosition = elements.findIndex((item) => item.id === reference.id)
-  const elementPosition = elements.findIndex((item) => item.id === element.id)
-  return referencePosition >= 0 && elementPosition > referencePosition
-}
-
-function isCanvasStackingCoverElement(element) {
-  return isCanvasAttachableElement(element) || isGeneratorFrame(element)
-}
-
-function getLaterCanvasStackingElements(reference, elements) {
-  return elements.filter((element) =>
-    element?.id !== reference?.id &&
-    isElementAfterInScene(element, reference, elements) &&
-    isCanvasStackingCoverElement(element)
-  )
-}
-
-function isElementVisuallyCoveredByLaterElement(reference, elements) {
-  const referenceBounds = getElementGeometry(reference)
-  const referenceArea = referenceBounds.width * referenceBounds.height
-  const referenceIndex = elements.findIndex((element) => element.id === reference?.id)
-  if (referenceIndex < 0 || referenceArea <= 0) return false
-  return getLaterCanvasStackingElements(reference, elements).some((element) =>
-    rectsOverlap(referenceBounds, getElementGeometry(element), 0)
-  )
-}
-
-function isHeaderCoveredByLaterElement(reference, elements, appState, placement, metrics) {
-  if (!metrics?.showHeader) return false
-  const headerHeight = Math.max(14, Number(metrics.headerFontSize) + 8)
-  const headerBounds = {
-    x: Number(placement?.left) || 0,
-    y: (Number(placement?.top) || 0) - (Number(metrics.headerOffset) || 0) - 2,
-    width: Math.max(1, Number(placement?.width) || 1),
-    height: headerHeight
-  }
-  return getLaterCanvasStackingElements(reference, elements).some((element) => {
-    const assetPlacement = getFrameViewportPlacement(getElementGeometry(element), appState)
-    const assetBounds = {
-      x: assetPlacement.left,
-      y: assetPlacement.top,
-      width: assetPlacement.width,
-      height: assetPlacement.height
-    }
-    return rectsOverlap(headerBounds, assetBounds, 2)
-  })
-}
-
 function findNonOverlappingPlacement(elements, initial) {
   const obstacles = elements.filter((element) => !element.isDeleted).map(getElementGeometry)
   if (!obstacles.some((bounds) => rectsOverlap(initial, bounds, 8))) return initial
@@ -1879,8 +1873,7 @@ function createAudioAttachmentPreviewDataURL(asset) {
   const color = '#2563eb'
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="${ATTACHMENT_CARD_WIDTH}" height="${ATTACHMENT_CARD_HEIGHT}" viewBox="0 0 ${ATTACHMENT_CARD_WIDTH} ${ATTACHMENT_CARD_HEIGHT}">
-  <rect width="100%" height="100%" rx="14" fill="#ffffff"/>
-  <rect x="0.5" y="0.5" width="${ATTACHMENT_CARD_WIDTH - 1}" height="${ATTACHMENT_CARD_HEIGHT - 1}" rx="13.5" fill="none" stroke="#d7dce5"/>
+  <rect width="100%" height="100%" fill="#ffffff"/>
   <rect x="22" y="24" width="74" height="74" rx="18" fill="${color}" opacity="0.12"/>
   <text x="59" y="69" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="${color}">AUDIO</text>
   <text x="116" y="52" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">${title}</text>
@@ -1935,8 +1928,7 @@ function createAttachmentPreviewDataURL(asset) {
         : '#374151'
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="${ATTACHMENT_CARD_WIDTH}" height="${ATTACHMENT_CARD_HEIGHT}" viewBox="0 0 ${ATTACHMENT_CARD_WIDTH} ${ATTACHMENT_CARD_HEIGHT}">
-  <rect width="100%" height="100%" rx="14" fill="#ffffff"/>
-  <rect x="0.5" y="0.5" width="${ATTACHMENT_CARD_WIDTH - 1}" height="${ATTACHMENT_CARD_HEIGHT - 1}" rx="13.5" fill="none" stroke="#d7dce5"/>
+  <rect width="100%" height="100%" fill="#ffffff"/>
   <rect x="22" y="24" width="74" height="74" rx="18" fill="${color}" opacity="0.12"/>
   ${attachmentKindIconMarkup(kind, color)}
   <text x="116" y="62" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">${title}</text>
@@ -2438,13 +2430,19 @@ function mergeAssetIntoForm(form, target, asset) {
   if (target === 'videoReferenceVideos') return { ...form, videoReferenceVideos: [...normalizeAssetList(form.videoReferenceVideos), asset].slice(-3) }
   if (target === 'videoReferenceAudios') return { ...form, videoReferenceAudios: [...normalizeAssetList(form.videoReferenceAudios), asset].slice(-3) }
   if (target === 'subtitleAudio') return { ...form, subtitleAudio: asset }
+  if (target === 'subtitleScript') return { ...form, subtitleScriptText: String(asset?.text || '').trim(), subtitleScriptName: asset?.name || 'script.txt' }
   if (target === 'silenceCutVideo') return { ...form, silenceCutVideo: asset }
   return { ...form, videoReferenceImages: [...normalizeAssetList(form.videoReferenceImages), asset].slice(-3) }
+}
+
+function snapshotSelectedGeneratedResult(result) {
+  return result?.elementId ? { ...result } : null
 }
 
 function buildPanelTargetFromScene(scene, activeFrameId, selectedGeneratedResult) {
   if (!scene || !Array.isArray(scene.elements)) return null
   const appState = scene.appState ?? {}
+  const { width: viewportWidth, height: viewportHeight } = viewportSize(appState)
   const elementsById = new Map(scene.elements.map((element) => [element.id, element]))
 
   if (selectedGeneratedResult?.elementId) {
@@ -2456,6 +2454,8 @@ function buildPanelTargetFromScene(scene, activeFrameId, selectedGeneratedResult
         id: selectedGeneratedResult.id || `result:${element.id}`,
         elementId: element.id,
         kind: panelMediaKindFromElement(element),
+        viewportWidth,
+        viewportHeight,
         ...geometry,
         ...placement
       }
@@ -2470,6 +2470,8 @@ function buildPanelTargetFromScene(scene, activeFrameId, selectedGeneratedResult
     return {
       id: element.id,
       kind: getGeneratorKind(element),
+      viewportWidth,
+      viewportHeight,
       ...geometry,
       ...placement
     }
@@ -2481,58 +2483,62 @@ function buildPanelTargetFromScene(scene, activeFrameId, selectedGeneratedResult
 function buildFrameOverlays(scene) {
   const appState = scene.appState ?? {}
   const selectedIds = new Set(getSelectedIds(appState))
+  const overlays = []
 
-  return scene.elements
-    .filter(isGeneratorFrame)
-    .map((element) => {
-      const kind = getGeneratorKind(element)
-      const customData = element.customData ?? {}
-      const pixelWidth = Number(element.customData?.pixelWidth) || Math.round(element.width * 4)
-      const pixelHeight = Number(element.customData?.pixelHeight) || Math.round(element.height * 4)
-      const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
-      const overlayMetrics = getFrameOverlayMetrics(placement.width, placement.height)
-      return {
-        id: element.id,
-        kind,
-        isSelected: selectedIds.has(element.id),
-        outputAsset: kind === 'silenceCut' ? (customData.silenceCutOutputAsset || null) : null,
-        // MCP/batch jobs mark their placeholder frames so the browser shows
-        // the Generating... overlay for work it did not start itself.
-        remoteGenerating: element.customData?.codexGenerating === true,
-        isCoveredByLaterElement: isElementVisuallyCoveredByLaterElement(element, scene.elements),
-        isHeaderCoveredByLaterElement: isHeaderCoveredByLaterElement(element, scene.elements, appState, placement, overlayMetrics),
-        left: placement.left,
-        top: placement.top,
-        width: placement.width,
-        height: placement.height,
-        pixelWidth,
-        pixelHeight
-      }
+  for (const element of scene.elements) {
+    if (!isGeneratorFrame(element)) continue
+    const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+    if (!shouldBuildViewportOverlay(placement, appState, selectedIds, element.id)) continue
+    const kind = getGeneratorKind(element)
+    const customData = element.customData ?? {}
+    const pixelWidth = Number(element.customData?.pixelWidth) || Math.round(element.width * 4)
+    const pixelHeight = Number(element.customData?.pixelHeight) || Math.round(element.height * 4)
+    overlays.push({
+      id: element.id,
+      kind,
+      isSelected: selectedIds.has(element.id),
+      outputAsset: kind === 'silenceCut' ? (customData.silenceCutOutputAsset || null) : null,
+      // MCP/batch jobs mark their placeholder frames so the browser shows
+      // the Generating... overlay for work it did not start itself.
+      remoteGenerating: element.customData?.codexGenerating === true,
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      height: placement.height,
+      pixelWidth,
+      pixelHeight
     })
-    .filter((overlay) => overlay.isSelected || isViewportPlacementNearViewport(overlay, appState))
+  }
+
+  return limitViewportOverlays(overlays, appState, FRAME_OVERLAY_MAX_ITEMS)
 }
 
 function getCanvasMediaDisplayName(element, files = {}) {
   const customData = element?.customData ?? {}
   const file = element?.fileId ? files[element.fileId] : null
   const kind = canvasAssetKindFromElement(element)
-  return (
-    customData.codexFileName ||
-    customData.generatorFileName ||
-    customData.codexGenerationPrompt ||
-    file?.name ||
-    (kind === 'video'
-      ? 'Video'
-      : kind === 'audio'
-        ? 'Audio'
-        : kind === 'xml'
-          ? 'Premiere XML'
-          : kind === 'srt'
-            ? 'Subtitles'
-            : kind === 'script'
-              ? 'Script'
-              : 'Image')
-  )
+  const fileName =
+    canvasLeafFileName(customData.codexFileName) ||
+    canvasLeafFileName(customData.generatorFileName) ||
+    canvasLeafFileName(file?.name) ||
+    canvasLeafFileNameFromAssetUrl(customData.codexAssetUrl) ||
+    canvasLeafFileNameFromAssetUrl(customData.generatorAssetUrl) ||
+    canvasLeafFileNameFromAssetUrl(file?.codexAssetUrl) ||
+    canvasLeafFileNameFromAssetUrl(file?.dataURL) ||
+    canvasLeafFileName(customData.codexAssetPath) ||
+    canvasLeafFileName(customData.generatorAssetPath)
+  if (fileName) return fileName
+  return kind === 'video'
+    ? 'Video'
+    : kind === 'audio'
+      ? 'Audio'
+      : kind === 'xml'
+        ? 'Premiere XML'
+        : kind === 'srt'
+          ? 'Subtitles'
+          : kind === 'script'
+            ? 'Script'
+            : 'Image'
 }
 
 function getCanvasMediaPixelSize(element, files = {}) {
@@ -2559,125 +2565,97 @@ function buildSelectedImageOverlays(scene) {
   const selectedIds = new Set(getSelectedIds(appState))
   // Youtube-AGI shows media headers for every media element near the
   // viewport, not only the selected one.
-  return scene.elements
-    .filter(isCanvasAttachableElement)
-    .map((element) => {
-      const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
-      const pixelSize = getCanvasMediaPixelSize(element, scene.files)
-      const file = element.fileId ? scene.files?.[element.fileId] : null
-      const assetUrl = normalizeCanvasAssetUrl(
-        assetUrlFromElement(element) ||
-        (isCanvasAssetUrl(file?.codexAssetUrl) ? file.codexAssetUrl : '') ||
-        (isCanvasAssetUrl(file?.dataURL) ? file.dataURL : '')
-      )
-      const assetType = canvasAssetKindFromElement(element)
-      const headerMetrics = getMediaHeaderMetrics(placement.width)
-      return {
-        id: element.id,
-        assetType,
-        fileName: getCanvasMediaDisplayName(element, scene.files),
-        assetPath: assetPathFromElement(element),
-        assetUrl,
-        isSelected: selectedIds.has(element.id),
-        left: placement.left,
-        top: placement.top,
-        width: placement.width,
-        height: placement.height,
-        angle: Number(element.angle) || 0,
-        pixelWidth: pixelSize.width,
-        pixelHeight: pixelSize.height,
-        isHeaderCoveredByLaterElement: isHeaderCoveredByLaterElement(element, scene.elements, appState, placement, headerMetrics)
-      }
-    })
-    .filter((overlay) => overlay.isSelected || isViewportPlacementNearViewport(overlay, appState))
-}
+  const overlays = []
 
-function collectSelectedChatAttachmentItems(overlays) {
-  const seen = new Set()
-  const items = []
-  for (const overlay of overlays) {
-    if (!overlay?.isSelected) continue
-    const path = overlay.assetPath || ''
-    const url = overlay.assetUrl || ''
-    const key = path || url
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    items.push({
-      id: overlay.id,
-      kind: overlay.assetType || 'file',
-      name: overlay.fileName || 'asset',
-      path,
-      url
+  for (const element of scene.elements) {
+    if (!isCanvasAttachableElement(element)) continue
+    const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+    if (!shouldBuildViewportOverlay(placement, appState, selectedIds, element.id)) continue
+    const pixelSize = getCanvasMediaPixelSize(element, scene.files)
+    const file = element.fileId ? scene.files?.[element.fileId] : null
+    const assetUrl = normalizeCanvasAssetUrl(
+      assetUrlFromElement(element) ||
+      (isCanvasAssetUrl(file?.codexAssetUrl) ? file.codexAssetUrl : '') ||
+      (isCanvasAssetUrl(file?.dataURL) ? file.dataURL : '')
+    )
+    const assetType = canvasAssetKindFromElement(element)
+    overlays.push({
+      id: element.id,
+      assetType,
+      fileName: getCanvasMediaDisplayName(element, scene.files),
+      assetPath: assetPathFromElement(element),
+      assetUrl,
+      isSelected: selectedIds.has(element.id),
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      height: placement.height,
+      angle: Number(element.angle) || 0,
+      pixelWidth: pixelSize.width,
+      pixelHeight: pixelSize.height
     })
   }
-  return items
-}
 
-function getSelectedChatAttachmentAnchor(overlays) {
-  const selected = overlays.filter((overlay) => overlay?.isSelected && (overlay.assetPath || overlay.assetUrl))
-  if (selected.length === 0) return null
-  const left = Math.min(...selected.map((overlay) => overlay.left))
-  const top = Math.min(...selected.map((overlay) => overlay.top))
-  const right = Math.max(...selected.map((overlay) => overlay.left + overlay.width))
-  const bottom = Math.max(...selected.map((overlay) => overlay.top + overlay.height))
-  return { left, top, width: right - left, height: bottom - top }
+  return limitViewportOverlays(overlays, appState, MEDIA_HEADER_OVERLAY_MAX_ITEMS)
 }
 
 function buildVideoPlaybackOverlays(scene) {
   const appState = scene.appState ?? {}
   const selectedIds = new Set(getSelectedIds(appState))
-  return scene.elements
-    .filter(isCanvasVideoElement)
-    .map((element) => {
-      const sourceURL = assetUrlFromElement(element)
-      if (!sourceURL) return null
-      const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
-      const file = element.fileId ? scene.files?.[element.fileId] : null
-      return {
-        id: element.id,
-        sourceURL,
-        posterDataURL: isRenderableVideoPosterDataURL(file?.dataURL) ? file.dataURL : '',
-        left: placement.left,
-        top: placement.top,
-        width: placement.width,
-        height: placement.height,
-        angle: Number(element.angle) || 0,
-        isSelected: selectedIds.has(element.id),
-        duration: Number(element.customData?.codexVideoDuration) || 0,
-        isCoveredByLaterElement: isElementVisuallyCoveredByLaterElement(element, scene.elements)
-      }
+  const overlays = []
+
+  for (const element of scene.elements) {
+    if (!isCanvasVideoElement(element)) continue
+    const sourceURL = assetUrlFromElement(element)
+    if (!sourceURL) continue
+    const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+    if (!shouldBuildViewportOverlay(placement, appState, selectedIds, element.id)) continue
+    const file = element.fileId ? scene.files?.[element.fileId] : null
+    overlays.push({
+      id: element.id,
+      sourceURL,
+      posterDataURL: isRenderableVideoPosterDataURL(file?.dataURL) ? file.dataURL : '',
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      height: placement.height,
+      angle: Number(element.angle) || 0,
+      isSelected: selectedIds.has(element.id),
+      duration: Number(element.customData?.codexVideoDuration) || 0
     })
-    .filter((overlay) => overlay && !overlay.isCoveredByLaterElement && (overlay.isSelected || isViewportPlacementNearViewport(overlay, appState)))
+  }
+
+  return limitViewportOverlays(overlays, appState, VIDEO_PLAYBACK_OVERLAY_MAX_ITEMS)
 }
 
 function buildSubtitlePreviewOverlays(scene) {
   const appState = scene.appState ?? {}
   const selectedIds = new Set(getSelectedIds(appState))
   const zoom = Number(appState.zoom?.value) || 1
-  return scene.elements
-    .filter(isGeneratedSubtitleResult)
-    .map((element) => {
-      const assetUrl = element.customData?.codexAssetUrl || ''
-      if (!assetUrl) return null
-      const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
-      const headerMetrics = getMediaHeaderMetrics(placement.width)
-      return {
-        id: element.id,
-        assetUrl,
-        fileName: element.customData?.codexFileName || 'subtitles.srt',
-        cueCount: Number(element.customData?.subtitleCueCount) || 0,
-        left: placement.left,
-        top: placement.top,
-        width: placement.width,
-        height: placement.height,
-        angle: Number(element.angle) || 0,
-        zoom,
-        isSelected: selectedIds.has(element.id),
-        isCoveredByLaterElement: isElementVisuallyCoveredByLaterElement(element, scene.elements),
-        isHeaderCoveredByLaterElement: isHeaderCoveredByLaterElement(element, scene.elements, appState, placement, headerMetrics)
-      }
+  const overlays = []
+
+  for (const element of scene.elements) {
+    if (!isGeneratedSubtitleResult(element)) continue
+    const assetUrl = element.customData?.codexAssetUrl || ''
+    if (!assetUrl) continue
+    const placement = getFrameViewportPlacement(getElementGeometry(element), appState)
+    if (!shouldBuildViewportOverlay(placement, appState, selectedIds, element.id)) continue
+    overlays.push({
+      id: element.id,
+      assetUrl,
+      fileName: getCanvasMediaDisplayName(element, scene.files),
+      cueCount: Number(element.customData?.subtitleCueCount) || 0,
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      height: placement.height,
+      angle: Number(element.angle) || 0,
+      zoom,
+      isSelected: selectedIds.has(element.id)
     })
-    .filter((overlay) => overlay && !overlay.isCoveredByLaterElement && (overlay.isSelected || isViewportPlacementNearViewport(overlay, appState)))
+  }
+
+  return limitViewportOverlays(overlays, appState, SUBTITLE_PREVIEW_OVERLAY_MAX_ITEMS)
 }
 
 // Fetched SRT text, split into raw lines, cached per asset URL. The lines map
@@ -2749,7 +2727,7 @@ function getSubtitlePreviewBaseFontSize(canvasViewportWidth) {
 }
 
 function getSubtitlePreviewLayout(lineCount, overlayWidth, overlayHeight, zoom, isSelected) {
-  const selectedPreviewInset = isSelected ? 3 : 0
+  const selectedPreviewInset = isSelected ? 5 : 0
   const viewportWidth = Math.max(1, overlayWidth - selectedPreviewInset * 2)
   const viewportHeight = Math.max(1, overlayHeight - selectedPreviewInset * 2)
   const safeZoom = Math.max(0.01, zoom || 1)
@@ -2918,7 +2896,7 @@ function SubtitleCanvasOverlay({ overlay, scrollOffset }) {
           </div>
         </div>
       </div>
-      {overlay.width >= 28 && !overlay.isHeaderCoveredByLaterElement ? (
+      {overlay.width >= 28 ? (
         <div
           className="lovart-image-header"
           style={{
@@ -3177,9 +3155,8 @@ function generatorCreateZoomFor(kind) {
 function generatorPanelReserveFor(kind) {
   if (kind === 'image') return 195
   if (kind === 'video') return 280
-  // The SRT panel is shorter than the video one; a 300px reserve kept the
-  // tall SRT card from reaching its 150% target zoom.
-  if (kind === 'subtitle') return 235
+  // Utility panels are tall and must leave room above the bottom toolbar.
+  if (kind === 'subtitle') return 300
   return 300
 }
 
@@ -3369,6 +3346,7 @@ export default function App() {
   const menuBackdropRef = useRef(null)
   const videoFrameUploadTargetRef = useRef('start')
   const pendingGeneratorUploadFrameIdRef = useRef('')
+  const pendingGeneratorUploadResultRef = useRef(null)
   const videoFrameLeaveTimerRef = useRef(0)
   const lastGeneratorPasteRef = useRef({ time: 0, sourceId: '', frameId: '' })
   const saveTimerRef = useRef(null)
@@ -3376,7 +3354,10 @@ export default function App() {
   const lastSelectionRef = useRef('')
   const applyingRemoteRef = useRef(false)
   const hasLocalChangesRef = useRef(false)
+  const localChangeVersionRef = useRef(0)
   const lastSyncedFingerprintRef = useRef('')
+  const pendingOverlaySceneRef = useRef(null)
+  const overlayRefreshFrameRef = useRef(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -3501,9 +3482,12 @@ export default function App() {
     [writeSelection]
   )
 
-  const saveCanvas = useCallback(async (scene) => {
+  const saveCanvas = useCallback(async (scene, options = {}) => {
     window.clearTimeout(saveTimerRef.current)
     saveTimerRef.current = null
+    const saveVersion = Number.isFinite(options.changeVersion)
+      ? options.changeVersion
+      : localChangeVersionRef.current
     // Persist viewport only (never selection) so the round-tripped scene can't
     // re-impose a stale selection on the live editor. Asset-backed file records
     // are stripped back to their asset URL so we never re-embed hydrated base64
@@ -3527,7 +3511,9 @@ export default function App() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(getViewState(scene.appState))
       })
-      hasLocalChangesRef.current = false
+      if (localChangeVersionRef.current === saveVersion) {
+        hasLocalChangesRef.current = false
+      }
     } catch (error) {
       console.error(error)
     }
@@ -3535,12 +3521,16 @@ export default function App() {
 
   const scheduleCanvasSave = useCallback(
     (scene) => {
+      const changeVersion = localChangeVersionRef.current + 1
+      localChangeVersionRef.current = changeVersion
       hasLocalChangesRef.current = true
       window.clearTimeout(saveTimerRef.current)
       // Save the freshest scene at fire time: a debounced frame-form write can
       // land between scheduling and firing, and saving the stale snapshot
       // would drop it from disk.
-      saveTimerRef.current = window.setTimeout(() => saveCanvas(latestSceneRef.current ?? scene), SAVE_DELAY_MS)
+      saveTimerRef.current = window.setTimeout(() => {
+        saveCanvas(latestSceneRef.current ?? scene, { changeVersion })
+      }, SAVE_DELAY_MS)
     },
     [saveCanvas]
   )
@@ -3572,6 +3562,25 @@ export default function App() {
     )
   }, [])
 
+  const scheduleOverlayRefresh = useCallback((scene) => {
+    pendingOverlaySceneRef.current = scene
+    if (overlayRefreshFrameRef.current) return
+    overlayRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      overlayRefreshFrameRef.current = 0
+      const pendingScene = pendingOverlaySceneRef.current
+      pendingOverlaySceneRef.current = null
+      if (pendingScene) refreshOverlayStates(pendingScene)
+    })
+  }, [refreshOverlayStates])
+
+  useEffect(() => () => {
+    if (overlayRefreshFrameRef.current) {
+      window.cancelAnimationFrame(overlayRefreshFrameRef.current)
+      overlayRefreshFrameRef.current = 0
+    }
+    pendingOverlaySceneRef.current = null
+  }, [])
+
   // Writing the panel form into the frame's customData on every keystroke made
   // Excalidraw fire onChange mid-IME-composition; the unconditional
   // setFrameForm below then reset the textarea to a stale value, duplicating
@@ -3579,29 +3588,37 @@ export default function App() {
   // and the form is only re-read from the element when the selection changes.
   const pendingFrameFormWriteRef = useRef(null)
   const updateActiveFrameElementRef = useRef(null)
+  const updateGeneratedResultElementRef = useRef(null)
 
   const flushPendingFrameFormWrite = useCallback(() => {
     const pending = pendingFrameFormWriteRef.current
     if (!pending) return
     pendingFrameFormWriteRef.current = null
     window.clearTimeout(pending.timer)
-    updateActiveFrameElementRef.current?.(pending.form, pending.frameId)
+    if (pending.frameId) {
+      updateActiveFrameElementRef.current?.(pending.form, pending.frameId)
+    } else if (pending.result) {
+      updateGeneratedResultElementRef.current?.(pending.form, pending.result)
+    }
   }, [])
 
   const scheduleFrameFormWrite = useCallback((form) => {
     const frameId = activeFrameIdRef.current
-    if (!frameId) return
+    const result = frameId ? null : snapshotSelectedGeneratedResult(selectedGeneratedResultRef.current)
+    if (!frameId && !result?.elementId) return
     const pending = pendingFrameFormWriteRef.current
     if (pending) window.clearTimeout(pending.timer)
     const timer = window.setTimeout(() => {
       if (pendingFrameFormWriteRef.current?.timer === timer) pendingFrameFormWriteRef.current = null
-      updateActiveFrameElementRef.current?.(form, frameId)
+      if (frameId) updateActiveFrameElementRef.current?.(form, frameId)
+      else updateGeneratedResultElementRef.current?.(form, result)
     }, 300)
-    pendingFrameFormWriteRef.current = { timer, form, frameId }
+    pendingFrameFormWriteRef.current = { timer, form, frameId, result }
   }, [])
 
-  const syncGeneratorUi = useCallback((scene) => {
-    refreshOverlayStates(scene)
+  const syncGeneratorUi = useCallback((scene, options = {}) => {
+    if (options.deferOverlays) scheduleOverlayRefresh(scene)
+    else refreshOverlayStates(scene)
     const elementsById = new Map(scene.elements.map((element) => [element.id, element]))
     const selectedIds = getSelectedIds(scene.appState)
     const selectedResultId =
@@ -3614,7 +3631,11 @@ export default function App() {
       ? ''
       : selectedIds.find((id) => isGeneratorFrame(elementsById.get(id))) ?? ''
     const pendingWrite = pendingFrameFormWriteRef.current
-    if (pendingWrite && pendingWrite.frameId !== selectedFrameId) flushPendingFrameFormWrite()
+    if (pendingWrite) {
+      const pendingTargetId = pendingWrite.frameId || pendingWrite.result?.elementId || ''
+      const selectedTargetId = selectedFrameId || selectedResultId || ''
+      if (pendingTargetId !== selectedTargetId) flushPendingFrameFormWrite()
+    }
 
     if (selectedFrameId) {
       const selectedFrame = elementsById.get(selectedFrameId)
@@ -3674,7 +3695,7 @@ export default function App() {
       setSelectedGeneratedResult(null)
       setOpenMenu(null)
     }
-  }, [refreshOverlayStates, flushPendingFrameFormWrite])
+  }, [refreshOverlayStates, scheduleOverlayRefresh, flushPendingFrameFormWrite])
 
   useEffect(() => {
     if (initialScene) syncGeneratorUi(initialScene)
@@ -3740,8 +3761,8 @@ export default function App() {
       if (!shouldSkipChangeEffects && api) {
         const normalizedElements = normalizeGeneratorFrameVisuals(workingElements)
         if (normalizedElements) {
-          suppressNextChangeRef.current = true
           window.setTimeout(() => {
+            suppressNextChangeRef.current = true
             api.updateScene({
               elements: normalizedElements,
               captureUpdate: CaptureUpdateAction.NEVER
@@ -3828,7 +3849,6 @@ export default function App() {
           const selectedAppState = { ...appState, selectedElementIds: selectedFrameId ? { [selectedFrameId]: true } : {} }
           const nextScene = createScene(workingElements, selectedAppState, files)
           latestSceneRef.current = nextScene
-          suppressNextChangeRef.current = true
           activeFrameIdRef.current = selectedFrameId
           lastFocusedFrameIdRef.current = selectedFrameId
           setActiveFrameId(selectedFrameId)
@@ -3841,6 +3861,7 @@ export default function App() {
           scheduleSelectionSave(nextScene)
           scheduleCanvasSave(nextScene)
           window.setTimeout(() => {
+            suppressNextChangeRef.current = true
             api.updateScene({
               elements: workingElements,
               appState: { selectedElementIds: selectedAppState.selectedElementIds },
@@ -3853,6 +3874,12 @@ export default function App() {
 
       const scene = createScene(workingElements, appState, files)
       latestSceneRef.current = scene
+      if (shouldSkipChangeEffects) {
+        scheduleOverlayRefresh(scene)
+        scheduleSelectionSave(scene)
+        if (!applyingRemoteRef.current) scheduleCanvasSave(scene)
+        return
+      }
       const didConsumeCanvasPick = consumeCanvasPickerSelectionRef.current?.(scene) === true
       if (didConsumeCanvasPick) {
         return
@@ -3878,12 +3905,12 @@ export default function App() {
             .find((el) => scenePointInElement(point, el))
           if (hit && hit.id !== activeFrameIdRef.current) {
             lastPointerDownCanvasRef.current = null
-            suppressNextChangeRef.current = true
             const reselected = { ...appState, selectedElementIds: { [hit.id]: true } }
             const nextScene = createScene(workingElements, reselected, files)
             latestSceneRef.current = nextScene
             syncGeneratorUi(nextScene)
             window.setTimeout(() => {
+              suppressNextChangeRef.current = true
               api.updateScene({
                 appState: { selectedElementIds: { [hit.id]: true } },
                 captureUpdate: CaptureUpdateAction.NEVER
@@ -3894,14 +3921,14 @@ export default function App() {
         }
       }
 
-      syncGeneratorUi(scene)
+      syncGeneratorUi(scene, { deferOverlays: true })
       scheduleSelectionSave(scene)
 
       if (!applyingRemoteRef.current && !shouldSkipChangeEffects) {
         scheduleCanvasSave(scene)
       }
     },
-    [api, refreshOverlayStates, scheduleCanvasSave, scheduleSelectionSave, syncGeneratorUi]
+    [api, refreshOverlayStates, scheduleCanvasSave, scheduleOverlayRefresh, scheduleSelectionSave, syncGeneratorUi]
   )
 
   const applyRemoteScene = useCallback(
@@ -3912,51 +3939,49 @@ export default function App() {
       saveTimerRef.current = null
       hasLocalChangesRef.current = false
       const normalized = normalizeScene(scene)
+      const remoteApplyVersion = localChangeVersionRef.current
       lastSyncedFingerprintRef.current = sceneFingerprint(normalized)
       latestSceneRef.current = normalized
       previousGeneratorFrameIdsRef.current = new Set(normalized.elements.filter(isGeneratorFrame).map((element) => element.id))
-      syncGeneratorUi(normalized)
-      applyingRemoteRef.current = true
-      suppressNextChangeRef.current = true
-      try {
-        const currentAppState = api.getAppState?.() ?? {}
-        const shouldApplyViewport = options.applyViewport === true
-        const nextAppState = {
-          ...normalized.appState,
-          // Never apply the remote selection — keep the user's live selection so
-          // a refresh can't deselect the frame they're working in.
-          selectedElementIds: options.applySelection
-            ? normalized.appState.selectedElementIds ?? {}
-            : currentAppState.selectedElementIds ?? {},
-          ...(!shouldApplyViewport
-            ? {
-                scrollX: currentAppState.scrollX,
-                scrollY: currentAppState.scrollY,
-                zoom: currentAppState.zoom
-              }
-            : {})
-        }
-        const nextScene = { ...normalized, appState: nextAppState }
-        latestSceneRef.current = nextScene
-        syncGeneratorUi(nextScene)
-        const fileRecords = Object.values(normalized.files)
-        const readyFiles = fileRecords.filter((file) => !isAssetBackedFileRecord(file))
-        if (readyFiles.length > 0) api.addFiles(readyFiles)
-        // Disk-backed records hydrate asynchronously after the scene applies;
-        // images pop in as each asset resolves instead of blocking the update.
-        hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile)
-        window.setTimeout(() => {
-          api.updateScene({
-            elements: normalized.elements,
-            appState: nextAppState,
-            captureUpdate: CaptureUpdateAction.NEVER
-          })
-        }, 0)
-      } finally {
+      const currentAppState = api.getAppState?.() ?? {}
+      const shouldApplyViewport = options.applyViewport === true
+      const nextAppState = {
+        ...normalized.appState,
+        // Never apply the remote selection — keep the user's live selection so
+        // a refresh can't deselect the frame they're working in.
+        selectedElementIds: options.applySelection
+          ? normalized.appState.selectedElementIds ?? {}
+          : currentAppState.selectedElementIds ?? {},
+        ...(!shouldApplyViewport
+          ? {
+              scrollX: currentAppState.scrollX,
+              scrollY: currentAppState.scrollY,
+              zoom: currentAppState.zoom
+            }
+          : {})
+      }
+      const nextScene = { ...normalized, appState: nextAppState }
+      latestSceneRef.current = nextScene
+      syncGeneratorUi(nextScene)
+      const fileRecords = Object.values(normalized.files)
+      const readyFiles = fileRecords.filter((file) => !isAssetBackedFileRecord(file))
+      if (readyFiles.length > 0) api.addFiles(readyFiles)
+      // Disk-backed records hydrate asynchronously after the scene applies;
+      // images pop in as each asset resolves instead of blocking the update.
+      hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile)
+      window.setTimeout(() => {
+        if (localChangeVersionRef.current !== remoteApplyVersion && !options.force) return
+        applyingRemoteRef.current = true
+        suppressNextChangeRef.current = true
+        api.updateScene({
+          elements: normalized.elements,
+          appState: nextAppState,
+          captureUpdate: CaptureUpdateAction.NEVER
+        })
         window.setTimeout(() => {
           applyingRemoteRef.current = false
         }, 3000)
-      }
+      }, 0)
     },
     [api, addHydratedAssetFile, syncGeneratorUi]
   )
@@ -4318,7 +4343,7 @@ export default function App() {
         .slice()
         .reverse()
       const target = elements.find((element) => {
-        if (!(isCanvasImageElement(element) || isCanvasVideoElement(element) || isGeneratorFrame(element))) return false
+        if (!(isCanvasAttachableElement(element) || isGeneratorFrame(element))) return false
         return scenePointInElement(scenePoint, element)
       })
 
@@ -4471,8 +4496,8 @@ export default function App() {
             }
           : element
       )
-      suppressNextChangeRef.current = true
       window.setTimeout(() => {
+        suppressNextChangeRef.current = true
         api.updateScene({
           elements: nextElements,
           captureUpdate: CaptureUpdateAction.NEVER
@@ -4489,6 +4514,58 @@ export default function App() {
   useEffect(() => {
     updateActiveFrameElementRef.current = updateActiveFrameElement
   }, [updateActiveFrameElement])
+
+  const updateGeneratedResultElement = useCallback(
+    (nextForm, resultOverride) => {
+      const result = resultOverride || selectedGeneratedResultRef.current
+      if (!api || !result?.elementId) return
+      const elements = api.getSceneElementsIncludingDeleted()
+      const resultElement = elements.find((element) => element.id === result.elementId)
+      if (!isGeneratedResult(resultElement)) return
+
+      const kind = result.kind || panelMediaKindFromElement(resultElement)
+      const customData = {
+        ...(resultElement.customData ?? {}),
+        ...frameCustomDataFromForm(kind, nextForm)
+      }
+      const nextElements = elements.map((element) =>
+        element.id === resultElement.id
+          ? {
+              ...element,
+              customData,
+              version: (Number(element.version) || 1) + 1,
+              versionNonce: Math.floor(Math.random() * 2 ** 31),
+              updated: Date.now()
+            }
+          : element
+      )
+      const selectedElementIds = { [resultElement.id]: true }
+      const nextAppState = { ...(api.getAppState?.() ?? latestSceneRef.current.appState), selectedElementIds }
+      const nextScene = createScene(nextElements, nextAppState, api.getFiles())
+      latestSceneRef.current = nextScene
+      activeFrameIdRef.current = ''
+      selectedGeneratedResultRef.current = { ...result, kind, elementId: resultElement.id }
+      setActiveFrameId('')
+      setSelectedGeneratedResult(selectedGeneratedResultRef.current)
+      setActiveFrameKind(kind)
+      window.setTimeout(() => {
+        suppressNextChangeRef.current = true
+        api.updateScene({
+          elements: nextElements,
+          appState: { selectedElementIds },
+          captureUpdate: CaptureUpdateAction.NEVER
+        })
+      }, 0)
+      refreshOverlayStates(nextScene)
+      scheduleSelectionSave(nextScene)
+      scheduleCanvasSave(nextScene)
+    },
+    [api, refreshOverlayStates, scheduleCanvasSave, scheduleSelectionSave]
+  )
+
+  useEffect(() => {
+    updateGeneratedResultElementRef.current = updateGeneratedResultElement
+  }, [updateGeneratedResultElement])
 
   const updateFrameForm = useCallback(
     (key, value) => {
@@ -4662,11 +4739,39 @@ export default function App() {
     }
   }, [])
 
+  const readTextAsset = useCallback(async (asset) => {
+    const url = asset?.url || ''
+    if (!url) throw new Error('台本ファイルを読み込めません。')
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`台本ファイルを読み込めません: ${response.status}`)
+    const text = await response.text()
+    return { ...asset, text }
+  }, [])
+
+  const getAttachmentDestinationFrameId = useCallback(() => {
+    if (activeFrameIdRef.current) return activeFrameIdRef.current
+    // When editing a generated result, there is intentionally no backing
+    // generator frame yet. Keep attachments on the visible form instead of
+    // writing them into whichever frame was focused previously.
+    if (selectedGeneratedResultRef.current) return ''
+    return lastFocusedFrameIdRef.current || ''
+  }, [])
+
   const addAssetToFrame = useCallback(
-    (target, assetOrAssets, frameIdOverride) => {
+    (target, assetOrAssets, frameIdOverride, options = {}) => {
       const assets = (Array.isArray(assetOrAssets) ? assetOrAssets : [assetOrAssets]).filter(Boolean)
       if (assets.length === 0) return
       const frameId = frameIdOverride || activeFrameIdRef.current
+      const selectedResult = !frameId
+        ? (options.selectedGeneratedResult || selectedGeneratedResultRef.current)
+        : null
+      if (selectedResult?.elementId) {
+        activeFrameIdRef.current = ''
+        selectedGeneratedResultRef.current = selectedResult
+        setActiveFrameId('')
+        setSelectedGeneratedResult(selectedResult)
+        setActiveFrameKind(selectedResult.kind)
+      }
       if (!frameId || frameId === activeFrameIdRef.current) {
         let nextForm = null
         setFrameForm((current) => {
@@ -4674,7 +4779,12 @@ export default function App() {
           return nextForm
         })
         window.setTimeout(() => {
-          if (nextForm) updateActiveFrameElement(nextForm, frameId || undefined)
+          if (!nextForm) return
+          if (selectedResult?.elementId && !frameId) {
+            updateGeneratedResultElement(nextForm, selectedResult)
+          } else {
+            updateActiveFrameElement(nextForm, frameId || undefined)
+          }
         }, 0)
         return
       }
@@ -4686,40 +4796,36 @@ export default function App() {
       const merged = assets.reduce((form, asset) => mergeAssetIntoForm(form, target, asset), frameFormFromElement(element))
       updateActiveFrameElement(merged, frameId)
     },
-    [api, updateActiveFrameElement]
+    [api, updateActiveFrameElement, updateGeneratedResultElement]
   )
 
   const openCanvasPicker = useCallback((target) => {
-    const frameId = activeFrameIdRef.current || lastFocusedFrameIdRef.current || ''
+    const frameId = getAttachmentDestinationFrameId()
+    const selectedGeneratedResult = frameId ? null : snapshotSelectedGeneratedResult(selectedGeneratedResultRef.current)
     canvasPickerFrameIdRef.current = frameId
-    canvasPickerRef.current = { target, frameId }
-    setCanvasPicker({ target, frameId })
+    canvasPickerRef.current = { target, frameId, selectedGeneratedResult }
+    setCanvasPicker({ target, frameId, selectedGeneratedResult })
     setOpenMenu(null)
-    if (api) {
-      suppressNextChangeRef.current = true
-      window.setTimeout(() => {
-        api.updateScene({
-          appState: { selectedElementIds: frameId ? { [frameId]: true } : {} },
-          captureUpdate: CaptureUpdateAction.NEVER
-        })
-      }, 0)
-    }
-    window.setTimeout(() => {
-      canvasPickerFrameIdRef.current = frameId
-      canvasPickerRef.current = { target, frameId }
-      setCanvasPicker({ target, frameId })
-    }, 0)
-  }, [api])
+  }, [getAttachmentDestinationFrameId])
 
   const rememberGeneratorUploadFrame = useCallback(() => {
-    pendingGeneratorUploadFrameIdRef.current = activeFrameIdRef.current || lastFocusedFrameIdRef.current || ''
-  }, [])
+    const frameId = getAttachmentDestinationFrameId()
+    pendingGeneratorUploadFrameIdRef.current = frameId
+    pendingGeneratorUploadResultRef.current = frameId ? null : snapshotSelectedGeneratedResult(selectedGeneratedResultRef.current)
+  }, [getAttachmentDestinationFrameId])
 
   const restoreGeneratorUploadFrame = useCallback(() => {
     const frameId = pendingGeneratorUploadFrameIdRef.current
     if (frameId) {
       activeFrameIdRef.current = frameId
       lastFocusedFrameIdRef.current = frameId
+    } else if (pendingGeneratorUploadResultRef.current?.elementId) {
+      const selectedResult = pendingGeneratorUploadResultRef.current
+      activeFrameIdRef.current = ''
+      selectedGeneratedResultRef.current = selectedResult
+      setActiveFrameId('')
+      setSelectedGeneratedResult(selectedResult)
+      setActiveFrameKind(selectedResult.kind)
     }
     return frameId
   }, [])
@@ -4728,7 +4834,20 @@ export default function App() {
     canvasPickerRef.current = null
     canvasPickerFrameIdRef.current = ''
     setCanvasPicker(null)
+    setOpenMenu(null)
   }, [])
+
+  useEffect(() => {
+    if (!canvasPicker) return undefined
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      closeCanvasPicker()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [canvasPicker, closeCanvasPicker])
 
   useEffect(() => {
     const onCanvasPickPointer = (event) => {
@@ -4769,23 +4888,35 @@ export default function App() {
       if (picker.target === 'imageReferences' && asset.kind !== 'image') return false
       if (picker.target === 'videoReferenceVideos' && asset.kind !== 'video') return false
       if (picker.target === 'videoReferenceAudios' && asset.kind !== 'audio') return false
+      if (picker.target === 'subtitleScript' && asset.kind !== 'script') return false
       // SRT audio accepts audio files or videos (audio extraction happens server-side).
       if (picker.target === 'subtitleAudio' && asset.kind !== 'audio' && asset.kind !== 'video') return false
       if (picker.target === 'silenceCutVideo' && asset.kind !== 'video' && asset.kind !== 'xml') return false
       const restoreFrameId = picker.frameId || canvasPickerFrameIdRef.current || ''
       const applyPickedAsset = (pickedAsset) => {
         if (restoreFrameId) activeFrameIdRef.current = restoreFrameId
-        addAssetToFrame(picker.target, pickedAsset, restoreFrameId || undefined)
+        addAssetToFrame(picker.target, pickedAsset, restoreFrameId || undefined, {
+          selectedGeneratedResult: picker.selectedGeneratedResult || null
+        })
         closeCanvasPicker()
         if (api && restoreFrameId) {
-          suppressNextChangeRef.current = true
           window.setTimeout(() => {
+            suppressNextChangeRef.current = true
             api.updateScene({
               appState: { selectedElementIds: { [restoreFrameId]: true } },
               captureUpdate: CaptureUpdateAction.NEVER
             })
           }, 0)
         }
+      }
+      if (picker.target === 'subtitleScript') {
+        readTextAsset(asset)
+          .then(applyPickedAsset)
+          .catch((error) => {
+            setGenerationError(error.message || '台本ファイルを読み込めません。')
+            closeCanvasPicker()
+          })
+        return true
       }
       if (asset.dataURL && !asset.path && !asset.url) {
         uploadAssetDataURL(asset)
@@ -4802,12 +4933,13 @@ export default function App() {
     return () => {
       consumeCanvasPickerSelectionRef.current = null
     }
-  }, [addAssetToFrame, api, closeCanvasPicker, uploadAssetDataURL])
+  }, [addAssetToFrame, api, closeCanvasPicker, readTextAsset, uploadAssetDataURL])
 
   const onImageUploadChange = useCallback(async (event) => {
     const files = Array.from(event.target.files || [])
     event.target.value = ''
     if (files.length === 0) return
+    const uploadSelectedResult = pendingGeneratorUploadResultRef.current
     const uploadFrameId = restoreGeneratorUploadFrame() || activeFrameIdRef.current
     try {
       const assets = await Promise.all(
@@ -4815,7 +4947,9 @@ export default function App() {
           .filter((file) => file.type.startsWith('image/'))
           .map(uploadAssetFile)
       )
-      addAssetToFrame('imageReferences', assets, uploadFrameId)
+      addAssetToFrame('imageReferences', assets, uploadFrameId, {
+        selectedGeneratedResult: uploadFrameId ? null : uploadSelectedResult
+      })
     } catch (error) {
       setGenerationError(error.message)
     }
@@ -4829,6 +4963,7 @@ export default function App() {
     const expectedKind = getUploadTargetKind(target)
     // Pin the destination now: large files upload for a long time and the
     // user may click other frames meanwhile — the asset must still land here.
+    const uploadSelectedResult = pendingGeneratorUploadResultRef.current
     const uploadFrameId = restoreGeneratorUploadFrame() || activeFrameIdRef.current
     setGenerationError('')
     try {
@@ -4846,7 +4981,9 @@ export default function App() {
         setGenerationError(`この枠には${need}ファイルを追加してください。`)
         return
       }
-      addAssetToFrame(target, assets, uploadFrameId)
+      addAssetToFrame(target, assets, uploadFrameId, {
+        selectedGeneratedResult: uploadFrameId ? null : uploadSelectedResult
+      })
     } catch (error) {
       setGenerationError(error.message || 'アップロードに失敗しました。')
     }
@@ -5040,7 +5177,7 @@ export default function App() {
             latestSceneRef.current = uploadedScene
             syncGeneratorUi(uploadedScene)
             scheduleSelectionSave(uploadedScene)
-            saveCanvas(uploadedScene)
+            scheduleCanvasSave(uploadedScene)
           })
           .catch((error) => {
             console.error(error)
@@ -5050,7 +5187,7 @@ export default function App() {
     } catch (error) {
       setGenerationError(error.message)
     }
-  }, [api, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, syncGeneratorUi, uploadAssetFile])
+  }, [api, scheduleCanvasSave, scheduleSelectionSave, syncGeneratorUi, uploadAssetFile])
 
   const onToolbarMediaInputChange = useCallback(async (event) => {
     const files = Array.from(event.target.files || [])
@@ -5207,25 +5344,21 @@ export default function App() {
         const frameCenterY = frameY + size.height / 2
         const targetScreenX = viewportWidth / 2
         if (viewportMoved) {
-          const fitZoom = fittedGeneratorZoom(
-            kind,
-            size,
-            viewportWidth,
-            viewportHeight,
-            generatorCreateZoomFor(kind)
-          )
-          if (wasOverlapping || Math.abs(curZoom - fitZoom) > 0.01) {
-            targetZoom = fitZoom
+          // BuzzAssist behavior: after the user pans/zooms elsewhere, create
+          // the frame in that current viewport and do not pull the camera back
+          // onto it. Only a collision-driven relocation gets focus treatment.
+          if (wasOverlapping) {
+            targetZoom = fittedGeneratorZoom(
+              kind,
+              size,
+              viewportWidth,
+              viewportHeight,
+              generatorCreateZoomFor(kind)
+            )
             shouldAnimate = true
-          }
-          const useZoom = shouldAnimate ? targetZoom : curZoom
-          const targetScreenY = frameScreenYFor(useZoom)
-          if (shouldAnimate) {
-            targetScrollX = targetScreenX / useZoom - frameCenterX
-            targetScrollY = targetScreenY / useZoom - frameCenterY
-          } else {
-            nextScrollX = targetScreenX / useZoom - frameCenterX
-            nextScrollY = targetScreenY / useZoom - frameCenterY
+            const targetScreenY = frameScreenYFor(targetZoom)
+            targetScrollX = targetScreenX / targetZoom - frameCenterX
+            targetScrollY = targetScreenY / targetZoom - frameCenterY
           }
         } else {
           const frameTopScreen = (frameY + curScrollY) * curZoom
@@ -5465,8 +5598,8 @@ export default function App() {
     activeFrameIdRef.current = ''
     setActiveFrameId('')
     if (api) {
-      suppressNextChangeRef.current = true
       window.setTimeout(() => {
+        suppressNextChangeRef.current = true
         api.updateScene({
           appState: { selectedElementIds: {} },
           captureUpdate: CaptureUpdateAction.NEVER
@@ -5584,8 +5717,8 @@ export default function App() {
           setSelectedGeneratedResult(null)
         }
         setFrameForm(savedForm)
-        suppressNextChangeRef.current = true
         window.setTimeout(() => {
+          suppressNextChangeRef.current = true
           api.updateScene({
             elements: nextElements,
             appState: { selectedElementIds },
@@ -5790,8 +5923,8 @@ export default function App() {
       setActiveFrameKind(kind)
       setSelectedGeneratedResult(null)
       setFrameForm(savedForm)
-      suppressNextChangeRef.current = true
       window.setTimeout(() => {
+        suppressNextChangeRef.current = true
         api.updateScene({
           appState: { selectedElementIds },
           captureUpdate: CaptureUpdateAction.NEVER
@@ -5968,8 +6101,7 @@ export default function App() {
     openMenu === 'videoStartFrame' ||
     openMenu === 'videoEndFrame' ||
     openMenu === 'videoReferenceImages' ||
-    openMenu === 'videoReferenceVideos' ||
-    openMenu === 'videoReferenceAudios'
+    openMenu === 'videoReferenceVideos'
   )
   const openMenuBlocksPrompt = Boolean(openMenu && !videoFrameMenuOpen)
   const hasAnyVideoReferenceAsset = Boolean(videoReferenceImages.length || videoReferenceVideos.length || videoReferenceAudios.length)
@@ -6004,32 +6136,6 @@ export default function App() {
       if (isInsideGeneratorUi) return
     }
     setOpenMenu(null)
-  }
-  const selectedChatAttachmentItems = collectSelectedChatAttachmentItems(selectedImageOverlays)
-  const selectedChatAttachmentAnchor = getSelectedChatAttachmentAnchor(selectedImageOverlays)
-  const selectedChatAttachmentStyle = selectedChatAttachmentAnchor
-    ? (() => {
-        const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth
-        const viewportHeight = typeof window === 'undefined' ? 900 : window.innerHeight
-        const centerX = selectedChatAttachmentAnchor.left + selectedChatAttachmentAnchor.width / 2
-        const left = Math.max(148, Math.min(viewportWidth - 148, centerX))
-        const below = selectedChatAttachmentAnchor.top + selectedChatAttachmentAnchor.height + 10
-        const top = below <= viewportHeight - 74
-          ? below
-          : Math.max(74, selectedChatAttachmentAnchor.top - 48)
-        return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px` }
-      })()
-    : null
-  const selectedChatAttachmentText = selectedChatAttachmentItems.length > 0
-    ? `キャンバスで選択した${selectedChatAttachmentItems.length}件のファイルです。内容を確認してください。`
-    : ''
-  const sendSelectedChatAttachments = (app) => {
-    if (selectedChatAttachmentItems.length === 0) return
-    sendToChatApp({
-      app,
-      text: selectedChatAttachmentText,
-      assetItems: selectedChatAttachmentItems
-    })
   }
 
   return (
@@ -6130,7 +6236,6 @@ export default function App() {
         const isGenerating = generatingFrameIds.has(overlay.id) || overlay.remoteGenerating
         const isVideo = overlay.kind === 'video'
         const isUtilityFrame = overlay.kind === 'subtitle' || overlay.kind === 'silenceCut'
-        if (overlay.isCoveredByLaterElement) return null
         const overlayTitle =
           overlay.kind === 'video'
             ? 'Video Generator'
@@ -6142,7 +6247,7 @@ export default function App() {
                   ? 'Lovart Generator'
                   : 'Image Generator'
         const overlayMetrics = getFrameOverlayMetrics(overlay.width, overlay.height)
-        const showFrameHeader = overlayMetrics.showHeader && !overlay.isHeaderCoveredByLaterElement
+        const showFrameHeader = overlayMetrics.showHeader
         return (
           <div
             key={overlay.id}
@@ -6294,7 +6399,7 @@ export default function App() {
 
       {selectedImageOverlays.map((img) => {
         const { headerFontSize, headerOffset } = getMediaHeaderMetrics(img.width)
-        if (img.width < 28 || img.isHeaderCoveredByLaterElement) return null
+        if (img.width < 28) return null
         return (
           <div
             key={img.id}
@@ -6320,28 +6425,6 @@ export default function App() {
           </div>
         )
       })}
-      {selectedChatAttachmentItems.length > 0 && selectedChatAttachmentStyle ? (
-        <div
-          className="lovart-chat-attach-bar"
-          style={selectedChatAttachmentStyle}
-          onPointerDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-          }}
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-          }}
-        >
-          <span>{selectedChatAttachmentItems.length}件をチャットへ</span>
-          <button type="button" onClick={() => sendSelectedChatAttachments('claude')}>
-            Claude
-          </button>
-          <button type="button" onClick={() => sendSelectedChatAttachments('codex')}>
-            Codex
-          </button>
-        </div>
-      ) : null}
       <div ref={hoverOverlayRef} className="lovart-hover-border" style={{ display: 'none' }} />
 
       {expandedVideoPlayback ? (
@@ -6579,23 +6662,23 @@ export default function App() {
                 {frameForm.videoTab === 'reference' ? (
                   <>
                     {supportsAudioReference(frameForm.videoModel) ? (
-                    <div className="lovart-video-slot audio">
-                      <FileUploadLabel
-                        className="lovart-add-frame-btn audio"
-                        title="音声"
-                        accept={getUploadTargetAccept('videoReferenceAudios')}
-                        multiple
-                        onOpen={() => {
-                          setVideoFrameBtnsHovered(true)
-                          rememberGeneratorUploadFrame()
-                          videoFrameUploadTargetRef.current = 'videoReferenceAudios'
-                        }}
-                        onChange={(event) => { setOpenMenu(null); onVideoFrameUploadChange(event) }}
-                      >
-                        <span className="lovart-add-plus">+</span>
-                        <span className="lovart-add-label">音声</span>
-                      </FileUploadLabel>
-                    </div>
+                      <div className="lovart-video-slot audio">
+                        <FileUploadLabel
+                          className="lovart-add-frame-btn audio"
+                          title="音声"
+                          accept={getUploadTargetAccept('videoReferenceAudios')}
+                          multiple
+                          onOpen={() => {
+                            setVideoFrameBtnsHovered(true)
+                            rememberGeneratorUploadFrame()
+                            videoFrameUploadTargetRef.current = 'videoReferenceAudios'
+                          }}
+                          onChange={(event) => { setOpenMenu(null); onVideoFrameUploadChange(event) }}
+                        >
+                          <span className="lovart-add-plus">+</span>
+                          <span className="lovart-add-label">音声</span>
+                        </FileUploadLabel>
+                      </div>
                     ) : null}
                     {[...videoReferenceVideos, ...videoReferenceImages].map((asset) => (
                       <div key={asset.id} className={`lovart-ref-card ${asset.kind}`}>
@@ -6644,22 +6727,30 @@ export default function App() {
             <div className="lovart-ai-left">
               {activeFrameKind === 'video' ? (
                 <div className="lovart-video-tabs">
-                  {getAvailableVideoTabs(frameForm.videoModel).map((tab) => (
-                    <button
-                      type="button"
-                      key={tab}
-                      className={frameForm.videoTab === tab ? 'is-selected' : ''}
-                      onClick={() => {
-                        setOpenMenu(null)
-                        patchFrameForm({
-                          videoTab: tab,
-                          videoMode: normalizeVideoModeForContext(frameForm.videoModel, tab, frameForm.videoMode)
-                        })
-                      }}
-                    >
-                      {tab === 'keyframe' ? 'キーフレーム' : tab === 'motion' ? 'モーション' : 'リファレンス'}
-                    </button>
-                  ))}
+                  {getAvailableVideoTabs(frameForm.videoModel).map((tab) => {
+                    const tabDisabled = isVideoTabDisabledForModel(frameForm.videoModel, tab)
+                    return (
+                      <button
+                        type="button"
+                        key={tab}
+                        disabled={tabDisabled}
+                        className={[
+                          frameForm.videoTab === tab && !tabDisabled ? 'is-selected' : '',
+                          tabDisabled ? 'is-disabled' : ''
+                        ].filter(Boolean).join(' ')}
+                        onClick={() => {
+                          if (tabDisabled) return
+                          setOpenMenu(null)
+                          patchFrameForm({
+                            videoTab: tab,
+                            videoMode: normalizeVideoModeForContext(frameForm.videoModel, tab, frameForm.videoMode)
+                          })
+                        }}
+                      >
+                        {tab === 'keyframe' ? 'キーフレーム' : tab === 'motion' ? 'モーション' : 'リファレンス'}
+                      </button>
+                    )
+                  })}
                 </div>
               ) : null}
               <div className="lovart-menu-wrap">
@@ -7139,10 +7230,14 @@ export default function App() {
         const primaryIsXml = isSilencePanel && /\.xml$/i.test(primaryAsset?.name || primaryAsset?.path || '')
         const hasScriptFile = Boolean(frameForm.subtitleScriptText.trim())
         const scriptSlotDisabled = frameForm.subtitleMode !== 'scripted'
+        const utilitySlotMenuOpen = isSilencePanel
+          ? openMenu === 'silence-video-source'
+          : openMenu === 'subtitle-audio-source' || openMenu === 'subtitle-script-source'
         const trayOpen =
           utilityTrayHovered ||
           Boolean(primaryAsset) ||
-          (!isSilencePanel && frameForm.subtitleMode === 'scripted' && hasScriptFile)
+          utilitySlotMenuOpen ||
+          (!isSilencePanel && !scriptSlotDisabled && hasScriptFile)
         const primaryTarget = isSilencePanel ? 'silenceCutVideo' : 'subtitleAudio'
         // Silence cut takes ONE source but shows two slots (動画 / XML) for
         // clarity — attaching to either replaces the source.
@@ -7322,9 +7417,7 @@ export default function App() {
                           onClick={() => setOpenMenu((c) => (c === 'subtitle-audio-source' ? null : 'subtitle-audio-source'))}
                         >
                           <AudioWaveIcon size={18} />
-                          <span className="lovart-utility-card-label">
-                            {primaryAsset.kind === 'audio' ? '音声' : truncateMiddle(primaryAsset.name || '音声・動画', 12)}
-                          </span>
+                          <span className="lovart-utility-card-label">音声</span>
                         </button>
                         <button
                           type="button"
@@ -7338,7 +7431,7 @@ export default function App() {
                       <button
                         type="button"
                         data-lovart-trigger="subtitle-audio"
-                        className="lovart-utility-tilt-card primary"
+                        className="lovart-utility-tilt-card primary audio-empty"
                         title="音声・動画を添付"
                         onClick={() => setOpenMenu((c) => (c === 'subtitle-audio-source' ? null : 'subtitle-audio-source'))}
                       >
@@ -7364,7 +7457,7 @@ export default function App() {
                       </div>
                     ) : null}
                   </div>
-                  <div className="lovart-utility-slot script">
+                  <div className="lovart-utility-slot script lovart-menu-wrap">
                     {scriptSlotDisabled ? (
                       <button
                         type="button"
@@ -7377,15 +7470,15 @@ export default function App() {
                       </button>
                     ) : hasScriptFile ? (
                       <div className="lovart-utility-card-wrap">
-                        <FileUploadLabel
+                        <button
+                          type="button"
                           className="lovart-utility-asset-card script"
                           title={frameForm.subtitleScriptName || '台本を添付'}
-                          accept=".txt,.md,.markdown,text/plain,text/markdown"
-                          onChange={handleScriptFileChange}
+                          onClick={() => setOpenMenu((c) => (c === 'subtitle-script-source' ? null : 'subtitle-script-source'))}
                         >
                           <ScriptFileIcon size={24} />
                           <span className="lovart-utility-card-label">{truncateMiddle(frameForm.subtitleScriptName || '台本', 12)}</span>
-                        </FileUploadLabel>
+                        </button>
                         <button
                           type="button"
                           className="lovart-frame-del"
@@ -7395,16 +7488,40 @@ export default function App() {
                         </button>
                       </div>
                     ) : (
-                      <FileUploadLabel
+                      <button
+                        type="button"
                         className="lovart-utility-tilt-card script"
                         title="台本を添付"
-                        accept=".txt,.md,.markdown,text/plain,text/markdown"
-                        onChange={handleScriptFileChange}
+                        onClick={() => setOpenMenu((c) => (c === 'subtitle-script-source' ? null : 'subtitle-script-source'))}
                       >
                         <span className="lovart-add-plus">+</span>
                         {trayOpen ? <span className="lovart-utility-card-hint">台本</span> : null}
-                      </FileUploadLabel>
+                      </button>
                     )}
+                    {openMenu === 'subtitle-script-source' ? (
+                      <div className="lovart-menu lovart-slot-menu" data-lovart-menu="subtitle-script-source">
+                        <FileUploadLabel
+                          className="lovart-upload-label"
+                          accept=".txt,.md,.markdown,text/plain,text/markdown"
+                          onChange={handleScriptFileChange}
+                        >
+                          <UploadIcon />
+                          <span>台本をアップロード</span>
+                        </FileUploadLabel>
+                        <button
+                          type="button"
+                          data-lovart-canvas-pick-target="subtitleScript"
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            openCanvasPicker('subtitleScript')
+                          }}
+                        >
+                          <CanvasPickIcon />
+                          <span>キャンバスから選択</span>
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </>
               )}
@@ -7851,7 +7968,20 @@ export default function App() {
       {canvasPicker ? (
         <div className="lovart-canvas-picker-bar">
           <span>キャンバスから選択</span>
-          <button type="button" onClick={closeCanvasPicker}>終了</button>
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              closeCanvasPicker()
+            }}
+          >
+            終了
+          </button>
         </div>
       ) : null}
       <input
