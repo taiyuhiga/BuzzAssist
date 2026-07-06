@@ -2090,10 +2090,10 @@ async function handleToolCall(params, progress = () => {}) {
   if (params?.name === TOOL_BUZZASSIST_AUTH_STATUS) {
     const status = await getBuzzAssistAuthStatus();
     const summary = status.loggedIn
-      ? `Logged in as ${status.userId ?? "unknown user"} (source: ${status.source}).${status.expiresSoon ? ` WARNING: token expires in ${status.expiresInDays} day(s) — run buzzassist_login to renew.` : ""}`
+      ? `ログイン中: ${status.userId ?? "不明なユーザー"}（source: ${status.source}）。${status.expiresSoon ? ` 警告: トークンの有効期限まであと${status.expiresInDays}日です — buzzassist_login で更新してください。` : ""}`
       : status.expired
-        ? "BuzzAssist login has expired. Run buzzassist_login."
-        : "Not logged in to BuzzAssist. Run buzzassist_login.";
+        ? "BuzzAssistのログイン有効期限が切れています。buzzassist_login を実行してください。"
+        : "BuzzAssistにログインしていません。buzzassist_login を実行してください。";
     return {
       content: [{ type: "text", text: summary }],
       structuredContent: status,
