@@ -58,6 +58,9 @@ const VIDEO_PLAYBACK_OVERLAY_MAX_ITEMS = 120
 const SUBTITLE_PREVIEW_OVERLAY_MAX_ITEMS = 120
 const ATTACHMENT_CARD_WIDTH = 320
 const ATTACHMENT_CARD_HEIGHT = 180
+// BuzzAssist subtitle-card footprint (matches lib/canvasScene.mjs).
+const SUBTITLE_CARD_WIDTH = 205
+const SUBTITLE_CARD_HEIGHT = 364
 const COLLAPSED_FREEDRAW_MAX_DIMENSION = 1
 const TEXT_ATTACHMENT_EXTENSIONS = new Set(['txt', 'md', 'markdown'])
 const VIDEO_POSTER_FALLBACK_DATA_URL =
@@ -5093,6 +5096,49 @@ export default function App() {
           videoUploadTasks.push({ file, elementId: videoElement.id, objectURL: poster.objectURL, poster })
           cursorX = bounds.x + bounds.width + 24
           cursorY = bounds.y
+        } else if (fileKind === 'srt') {
+          // Desktop parity: uploaded .srt files become real subtitle cards
+          // (rendered by the SRT preview overlay), not generic attachments.
+          const asset = await uploadAssetFile(file)
+          const srtText = await file.text()
+          const cueCount = srtText.split(/\r?\n\s*\r?\n/).filter((block) => /-->/.test(block)).length
+          const bounds = findNonOverlappingPlacement(nextElements, {
+            x: cursorX,
+            y: cursorY,
+            width: SUBTITLE_CARD_WIDTH,
+            height: SUBTITLE_CARD_HEIGHT
+          })
+          const [rawCard] = convertToExcalidrawElements(
+            [
+              {
+                type: 'rectangle',
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+                strokeColor: '#d9d9d9',
+                backgroundColor: '#faf8ff',
+                fillStyle: 'solid',
+                strokeStyle: 'solid',
+                strokeWidth: 1,
+                roughness: 1,
+                customData: {
+                  codexGeneratedSubtitle: true,
+                  codexMediaKind: 'subtitle',
+                  codexFileName: asset.name,
+                  codexAssetPath: asset.path,
+                  codexAssetUrl: asset.url,
+                  subtitleCueCount: cueCount
+                }
+              }
+            ],
+            { regenerateIds: true }
+          )
+          const cardElement = { ...rawCard, roundness: { type: 3 }, index: chooseElementIndex(nextElements) }
+          nextElements.push(cardElement)
+          insertedIds[cardElement.id] = true
+          cursorX = bounds.x + bounds.width + 24
+          cursorY = bounds.y
         } else {
           const asset = await uploadAssetFile(file)
           const previewDataURL = createAttachmentPreviewDataURL(asset)
@@ -5209,7 +5255,7 @@ export default function App() {
         return Array.from(items).some((it) => {
           if (it.kind !== 'file') return false
           const type = String(it.type || '').toLowerCase()
-          return /^(image|video|audio)\//.test(type) || type === 'application/xml' || type === 'text/xml' || type === 'text/plain' || type === 'text/markdown'
+          return /^(image|video|audio)\//.test(type) || type === 'application/xml' || type === 'text/xml' || type === 'application/x-subrip' || type === 'text/plain' || type === 'text/markdown'
         })
       }
       const types = event.dataTransfer?.types
