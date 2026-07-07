@@ -3493,6 +3493,8 @@ export default function App() {
   const pendingOverlaySceneRef = useRef(null)
   const overlayRefreshFrameRef = useRef(0)
   const assetHydrationTimerRef = useRef(0)
+  const hydratedFileBufferRef = useRef(new Map())
+  const hydratedFlushTimerRef = useRef(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -3843,10 +3845,19 @@ export default function App() {
     if (initialScene) syncGeneratorUi(initialScene)
   }, [initialScene, syncGeneratorUi])
 
-  const addHydratedAssetFile = useCallback((file) => {
-    if (!api || !file?.id) return
-    api.addFiles([file])
+  // Apply a batch of freshly hydrated files in ONE scene update. Hydrating a
+  // large canvas over the tunnel streams dozens of files; rebuilding and
+  // re-rendering the whole scene per file pins a phone CPU, so buffered files
+  // are flushed together (throttled) into a single updateScene.
+  const flushHydratedFiles = useCallback(() => {
+    hydratedFlushTimerRef.current = 0
+    const buffer = hydratedFileBufferRef.current
+    if (!api || buffer.size === 0) return
+    const bufferedFiles = [...buffer.values()]
+    hydratedFileBufferRef.current = new Map()
 
+    api.addFiles(bufferedFiles)
+    const fileIds = new Set(bufferedFiles.map((file) => file.id))
     const currentElements = api.getSceneElementsIncludingDeleted?.() ?? latestSceneRef.current.elements
     let touchedImage = false
     let restoredStatus = false
@@ -3854,7 +3865,7 @@ export default function App() {
     const restoredElements = currentElements.map((element) => {
       if (
         element?.type !== 'image' ||
-        element.fileId !== file.id ||
+        !fileIds.has(element.fileId) ||
         element.customData?.codexMediaKind === 'video'
       ) {
         return element
@@ -3872,10 +3883,8 @@ export default function App() {
     if (!touchedImage) return
 
     const currentAppState = api.getAppState?.() ?? latestSceneRef.current.appState
-    const currentFiles = {
-      ...(api.getFiles?.() ?? latestSceneRef.current.files ?? {}),
-      [file.id]: file
-    }
+    const currentFiles = { ...(api.getFiles?.() ?? latestSceneRef.current.files ?? {}) }
+    for (const file of bufferedFiles) currentFiles[file.id] = file
     const nextScene = createScene(restoredElements, currentAppState, currentFiles)
     latestSceneRef.current = nextScene
     suppressNextChangeRef.current = true
@@ -3887,6 +3896,20 @@ export default function App() {
     refreshOverlayStates(nextScene)
     if (restoredStatus) scheduleCanvasSave(nextScene)
   }, [api, refreshOverlayStates, scheduleCanvasSave])
+
+  const addHydratedAssetFile = useCallback((file) => {
+    if (!api || !file?.id) return
+    hydratedFileBufferRef.current.set(file.id, file)
+    // Flush large backlogs immediately, otherwise coalesce a short burst.
+    if (hydratedFileBufferRef.current.size >= 12) {
+      window.clearTimeout(hydratedFlushTimerRef.current)
+      flushHydratedFiles()
+      return
+    }
+    if (!hydratedFlushTimerRef.current) {
+      hydratedFlushTimerRef.current = window.setTimeout(flushHydratedFiles, 140)
+    }
+  }, [api, flushHydratedFiles])
 
   const scheduleVisibleAssetHydration = useCallback((scene) => {
     if (!api || !scene || !isTunnelCanvasRuntime()) return

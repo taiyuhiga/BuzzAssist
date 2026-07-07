@@ -420,17 +420,27 @@ async function serveCanvasAsset(req, res, next) {
     const previewWidth = parsePreviewWidth(url)
     let servePath = filePath
     let serveStat = fileStat
+    let servedPreview = false
     if (previewWidth && !url.searchParams.get('download')) {
       const previewPath = await resolveAssetPreview(filePath, fileStat, previewWidth)
       if (previewPath) {
         servePath = previewPath
         serveStat = await stat(previewPath)
+        servedPreview = true
       }
     }
     res.statusCode = 200
     res.setHeader('content-type', mimeTypes.get(extname(servePath).toLowerCase()) ?? 'application/octet-stream')
     res.setHeader('content-length', String(serveStat.size))
-    res.setHeader('cache-control', 'no-cache')
+    // Previews are content-stable for a given (name, width, mtime); let the
+    // phone cache them so a reload does not re-download the whole canvas.
+    res.setHeader('cache-control', servedPreview ? 'private, max-age=86400' : 'no-cache')
+    res.setHeader('etag', `"${basename(servePath)}-${serveStat.size}-${Math.round(serveStat.mtimeMs)}"`)
+    if (req.headers['if-none-match'] === res.getHeader('etag')) {
+      res.statusCode = 304
+      res.end()
+      return
+    }
     if (url.searchParams.get('download')) {
       res.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(basename(filePath))}`)
     }
