@@ -429,21 +429,45 @@ async function serveCanvasAsset(req, res, next) {
         servedPreview = true
       }
     }
-    res.statusCode = 200
-    res.setHeader('content-type', mimeTypes.get(extname(servePath).toLowerCase()) ?? 'application/octet-stream')
-    res.setHeader('content-length', String(serveStat.size))
+    const contentType = mimeTypes.get(extname(servePath).toLowerCase()) ?? 'application/octet-stream'
+    res.setHeader('content-type', contentType)
+    // Range support is required for iOS Safari to play <video> at all, and lets
+    // browsers seek/stream instead of downloading the whole file up front.
+    res.setHeader('accept-ranges', 'bytes')
     // Previews are content-stable for a given (name, width, mtime); let the
     // phone cache them so a reload does not re-download the whole canvas.
     res.setHeader('cache-control', servedPreview ? 'private, max-age=86400' : 'no-cache')
     res.setHeader('etag', `"${basename(servePath)}-${serveStat.size}-${Math.round(serveStat.mtimeMs)}"`)
+    if (url.searchParams.get('download')) {
+      res.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(basename(filePath))}`)
+    }
+
+    const rangeHeader = req.headers.range
+    const rangeMatch = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null
+    if (rangeMatch && (rangeMatch[1] || rangeMatch[2])) {
+      let start = rangeMatch[1] ? Number.parseInt(rangeMatch[1], 10) : 0
+      let end = rangeMatch[2] ? Number.parseInt(rangeMatch[2], 10) : serveStat.size - 1
+      end = Math.min(end, serveStat.size - 1)
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= serveStat.size) {
+        res.statusCode = 416
+        res.setHeader('content-range', `bytes */${serveStat.size}`)
+        res.end()
+        return
+      }
+      res.statusCode = 206
+      res.setHeader('content-range', `bytes ${start}-${end}/${serveStat.size}`)
+      res.setHeader('content-length', String(end - start + 1))
+      createReadStream(servePath, { start, end }).pipe(res)
+      return
+    }
+
     if (req.headers['if-none-match'] === res.getHeader('etag')) {
       res.statusCode = 304
       res.end()
       return
     }
-    if (url.searchParams.get('download')) {
-      res.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(basename(filePath))}`)
-    }
+    res.statusCode = 200
+    res.setHeader('content-length', String(serveStat.size))
     createReadStream(servePath).pipe(res)
   } catch (error) {
     if (error.code === 'ENOENT') {
