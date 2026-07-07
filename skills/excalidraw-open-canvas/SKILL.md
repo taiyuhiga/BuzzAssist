@@ -15,7 +15,7 @@ description: Open the local project-bound BuzzAssist Excalidraw canvas. Use when
 
 Run this from the BuzzAssist Excalidraw repository root. Pass the active user project directory, not the plugin repository directory.
 
-2. Open the local URL in the current host's in-app browser when browser control is available. In Codex, use the in-app Browser tool. In Claude Code, use its browser tool if available.
+2. Open the local URL in the current host's in-app browser when browser control is available. In Codex, use the in-app Browser tool. In Claude Code, use its browser tool if available. This is mandatory for both hosts when those tools are exposed: do not use the OS/default browser (`open`, `xdg-open`, etc.) as a substitute unless the user explicitly asks for it.
 
 The default URL is usually:
 

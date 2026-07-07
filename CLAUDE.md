@@ -5,7 +5,7 @@ When the user gives this repository URL and asks to set it up, do the setup end 
 1. Clone or open this repository.
 2. Run `node scripts/setup-agents.mjs --agent claude --project-dir <active-user-project-dir>` from the repository root. If there is no separate active project, use this repository root as the project dir.
 3. The script must configure Claude Code only. Do not configure Codex, Cursor, or Antigravity unless the user explicitly asks for those hosts too.
-4. After the script prints `BUZZASSIST_CANVAS_URL=...` and `BUZZASSIST_CANVAS_CHECK=ok`, open that URL in the current host's in-app browser. If Claude Code exposes a browser tool, use it. If browser control is unavailable, report the URL and say that setup still completed because the canvas check passed.
+4. After the script prints `BUZZASSIST_CANVAS_URL=...` and `BUZZASSIST_CANVAS_CHECK=ok`, open that URL in the current host's in-app browser. In Claude Code, use Claude Code's browser tool when it is exposed. This is mandatory when the tool is available: do not use the OS/default browser (`open`, `xdg-open`, etc.) as a substitute unless the user explicitly asks for it. If browser control is unavailable, report the URL and say that setup still completed because the canvas check passed.
 
 Manual fallback:
 

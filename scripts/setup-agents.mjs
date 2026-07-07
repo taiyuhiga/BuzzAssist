@@ -762,7 +762,7 @@ async function main() {
     console.log(`BUZZASSIST_CANVAS_URL=${discovery.url}`);
     console.log(`BUZZASSIST_CANVAS_CHECK=${canvasCheck?.ok ? "ok" : "needs-attention"}`);
     console.log(`BUZZASSIST_CANVAS_DISCOVERY=${join(canvasDir, ".server.json")}`);
-    console.log("Open BUZZASSIST_CANVAS_URL in the current host's in-app browser now.");
+    console.log("Open BUZZASSIST_CANVAS_URL in the current host's in-app browser now. For Codex/Claude Code, use the host in-app browser tool; do not use the OS/default browser unless the user explicitly asks.");
   }
 }
 
