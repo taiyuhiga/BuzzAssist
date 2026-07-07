@@ -1286,8 +1286,14 @@ async function hydrateAssetBackedFiles(files, onHydrated, options = {}) {
         typeof file.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)
           ? file.codexAssetUrl
           : file.dataURL
+      // Over the tunnel, multi-MB originals overwhelm phone bandwidth/memory —
+      // request a downscaled preview; the server falls back to the original
+      // for small files and non-bitmap types. Local sessions keep full-res.
+      const fetchUrl = isTunnelCanvasRuntime() && /\.(png|jpe?g|webp)$/i.test(url.split('?')[0])
+        ? `${url}${url.includes('?') ? '&' : '?'}w=1600`
+        : url
       try {
-        const dataURL = await fetchAssetDataURL(url)
+        const dataURL = await fetchAssetDataURL(fetchUrl)
         onHydrated({ ...file, dataURL, codexAssetBacked: true, codexAssetUrl: persistedCanvasAssetUrl(url) })
       } catch (error) {
         console.error(error)

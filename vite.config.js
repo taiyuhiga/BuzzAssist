@@ -329,6 +329,73 @@ function localAssetFilePathFromUrl(pathname) {
   return isSafeChildPath(canvasAssetsDir, filePath) ? filePath : null
 }
 
+// Downscalable canvas bitmaps: multi-MB originals are fine on localhost but
+// choke phones over the tunnel, so ?w=<px> serves an ffmpeg-scaled preview
+// cached under canvas/.asset-previews (keyed by name+width+mtime).
+const PREVIEWABLE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
+const assetPreviewJobs = new Map()
+
+function parsePreviewWidth(url) {
+  const raw = Number(url.searchParams.get('w'))
+  if (!Number.isFinite(raw) || raw <= 0) return 0
+  return Math.max(320, Math.min(3200, Math.round(raw)))
+}
+
+async function resolveAssetPreview(filePath, fileStat, width) {
+  if (!PREVIEWABLE_IMAGE_EXTENSIONS.has(extname(filePath).toLowerCase())) return null
+  // Tiny files gain nothing from rescaling.
+  if (fileStat.size <= 256 * 1024) return null
+  const previewsDir = join(canvasDir, '.asset-previews')
+  // WebP: ~10x smaller than PNG for photographic content, keeps alpha.
+  const key = `${basename(filePath)}.${width}.${Math.round(fileStat.mtimeMs)}.webp`
+  const previewPath = join(previewsDir, key)
+  const useIfSmaller = async (candidatePath) => {
+    try {
+      const previewStat = await stat(candidatePath)
+      if (previewStat.isFile() && previewStat.size > 0 && previewStat.size < fileStat.size) return candidatePath
+    } catch {}
+    return null
+  }
+  const cached = await useIfSmaller(previewPath)
+  if (cached) return cached
+  // Deduplicate concurrent generation of the same preview.
+  const jobKey = previewPath
+  if (!assetPreviewJobs.has(jobKey)) {
+    assetPreviewJobs.set(jobKey, (async () => {
+      await mkdir(previewsDir, { recursive: true })
+      const tmpPath = `${previewPath}.tmp.webp`
+      await new Promise((resolvePreview, rejectPreview) => {
+        const child = spawn('ffmpeg', [
+          '-y', '-v', 'error',
+          '-i', filePath,
+          '-vf', `scale='min(${width},iw)':-2`,
+          '-c:v', 'libwebp', '-quality', '82',
+          tmpPath,
+        ])
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL')
+          rejectPreview(new Error('preview generation timed out'))
+        }, 20_000)
+        child.on('error', (error) => { clearTimeout(timer); rejectPreview(error) })
+        child.on('close', (code) => {
+          clearTimeout(timer)
+          if (code === 0) resolvePreview()
+          else rejectPreview(new Error(`ffmpeg exited with ${code}`))
+        })
+      })
+      await rename(tmpPath, previewPath)
+      return previewPath
+    })().finally(() => assetPreviewJobs.delete(jobKey)))
+  }
+  try {
+    await assetPreviewJobs.get(jobKey)
+    // Serve the preview only when it actually beats the original.
+    return await useIfSmaller(previewPath)
+  } catch {
+    return null // fall back to the original on any generation failure
+  }
+}
+
 async function serveCanvasAsset(req, res, next) {
   const url = new URL(req.url, 'http://127.0.0.1')
   if (!url.pathname.startsWith(canvasAssetsRoute)) {
@@ -350,14 +417,24 @@ async function serveCanvasAsset(req, res, next) {
       res.end('Not found')
       return
     }
+    const previewWidth = parsePreviewWidth(url)
+    let servePath = filePath
+    let serveStat = fileStat
+    if (previewWidth && !url.searchParams.get('download')) {
+      const previewPath = await resolveAssetPreview(filePath, fileStat, previewWidth)
+      if (previewPath) {
+        servePath = previewPath
+        serveStat = await stat(previewPath)
+      }
+    }
     res.statusCode = 200
-    res.setHeader('content-type', mimeTypes.get(extname(filePath).toLowerCase()) ?? 'application/octet-stream')
-    res.setHeader('content-length', String(fileStat.size))
+    res.setHeader('content-type', mimeTypes.get(extname(servePath).toLowerCase()) ?? 'application/octet-stream')
+    res.setHeader('content-length', String(serveStat.size))
     res.setHeader('cache-control', 'no-cache')
     if (url.searchParams.get('download')) {
       res.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(basename(filePath))}`)
     }
-    createReadStream(filePath).pipe(res)
+    createReadStream(servePath).pipe(res)
   } catch (error) {
     if (error.code === 'ENOENT') {
       res.statusCode = 404
