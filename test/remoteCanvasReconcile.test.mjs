@@ -14,6 +14,25 @@ test("higher incoming version wins (mobile moved an element)", () => {
   assert.ok(merged.find((e) => e.id === "b"), "local-only element is preserved");
 });
 
+test("mobile edits preserve desktop-owned customData when it was omitted from the mobile payload", () => {
+  const local = [el("a", 3, { x: 0, customData: { codexAssetUrl: "/excalidraw-assets/a.png", prompt: "large" } })];
+  const incoming = [el("a", 4, { x: 200 })];
+  const merged = reconcileElements(local, incoming);
+  const a = merged.find((e) => e.id === "a");
+  assert.equal(a.x, 200);
+  assert.deepEqual(a.customData, { codexAssetUrl: "/excalidraw-assets/a.png", prompt: "large" });
+});
+
+test("incoming customData can add fields without dropping existing desktop metadata", () => {
+  const local = [el("a", 3, { customData: { codexAssetUrl: "/excalidraw-assets/a.png" } })];
+  const incoming = [el("a", 4, { customData: { remoteNote: "moved" } })];
+  const merged = reconcileElements(local, incoming);
+  assert.deepEqual(merged.find((e) => e.id === "a").customData, {
+    codexAssetUrl: "/excalidraw-assets/a.png",
+    remoteNote: "moved",
+  });
+});
+
 test("lower/equal incoming version does not clobber a newer local edit", () => {
   const local = [el("a", 9, { x: 1 })];
   const incoming = [el("a", 4, { x: 999 })];

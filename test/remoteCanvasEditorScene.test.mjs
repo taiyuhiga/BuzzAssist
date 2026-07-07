@@ -7,7 +7,7 @@ const bigDataURL = `data:image/png;base64,${"A".repeat(300 * 1024)}`;
 function sampleScene() {
   return {
     elements: [
-      { id: "r1", type: "rectangle", x: 0, y: 0, width: 10, height: 10, strokeColor: "#000" },
+      { id: "r1", type: "rectangle", x: 0, y: 0, width: 10, height: 10, strokeColor: "#000", customData: { hugePrompt: "x".repeat(2048) } },
       { id: "img1", type: "image", x: 5, y: 5, width: 100, height: 80, fileId: "file_asset" },
       { id: "img2", type: "image", x: 9, y: 9, width: 50, height: 50, fileId: "file_inline" },
       { id: "imgbig", type: "image", x: 1, y: 1, width: 20, height: 20, fileId: "file_big_inline" },
@@ -30,12 +30,13 @@ function sampleScene() {
   };
 }
 
-test("editor scene keeps all live elements verbatim and drops deleted ones", () => {
+test("editor scene keeps live render props, drops deleted elements, and omits desktop metadata", () => {
   const { scene } = toEditorScene(sampleScene());
   const ids = scene.elements.map((e) => e.id);
   assert.deepEqual(ids, ["r1", "img1", "img2", "imgbig"]);
   const rect = scene.elements.find((e) => e.id === "r1");
   assert.equal(rect.strokeColor, "#000", "full element props survive (not the stripped skeleton)");
+  assert.equal(rect.customData, undefined, "desktop-owned metadata is not sent to mobile");
 });
 
 test("viewer appState carries viewport but never selection or collaborators", () => {
