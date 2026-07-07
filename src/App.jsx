@@ -3129,17 +3129,33 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
     <div className="lovart-video-playback-ui" style={placementStyle}>
       {isHovered && showOverlayUI && !video.isSelected ? <div className="lovart-video-hover-gradient" /> : null}
       {!isHovered && showOverlayUI ? (
-        <div
+        <button
+          type="button"
           className="lovart-video-play-icon"
           style={{
             width: `${Math.round(48 * iconScale)}px`,
             height: `${Math.round(48 * iconScale)}px`
           }}
+          onPointerDown={(event) => {
+            // Touch devices never hover, so this button is the only playback
+            // entry point on phones: open the modal player straight from the
+            // tap gesture. On mouse, hovering unmounts the icon before a click
+            // can land, so desktop selection behavior is unchanged.
+            event.preventDefault()
+            event.stopPropagation()
+            onExpand(video)
+          }}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onExpand(video)
+          }}
+          aria-label="動画を再生"
         >
           <svg width={Math.round(18 * iconScale)} height={Math.round(18 * iconScale)} viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M8 5.14v13.72a1 1 0 001.5.86l11.04-6.86a1 1 0 000-1.72L9.5 4.28A1 1 0 008 5.14z" fill="#fff" />
           </svg>
-        </div>
+        </button>
       ) : null}
       {durationLabel && showOverlayUI ? (
         <div
@@ -3203,6 +3219,15 @@ function ExpandedVideoPlayer({ video, onClose }) {
         playsInline
         className="lovart-video-modal-player"
         onClick={(event) => event.stopPropagation()}
+        onLoadedMetadata={(event) => {
+          // iOS may reject unmuted autoplay outside the tap's call stack; start
+          // muted instead of silently not playing (controls allow unmuting).
+          const element = event.currentTarget
+          void element.play().catch(() => {
+            element.muted = true
+            void element.play().catch(() => {})
+          })
+        }}
       />
     </div>
   )

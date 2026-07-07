@@ -255,7 +255,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: none;
+  /* Real button: the only playback entry point on touch devices. */
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 0;
+  border: 0;
   background: rgb(0 0 0 / 0.45);
   border-radius: 999px;
   box-shadow: 0 10px 24px rgb(0 0 0 / 0.22);
