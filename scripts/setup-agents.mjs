@@ -40,9 +40,9 @@ Options:
   --skip-build           Do not run npm run build.
   --skip-plugin-source   Do not refresh ~/plugins/buzzassist.
   --no-launch            Do not start the canvas service.
-  --tunnel               Start an ngrok Canvas Tunnel after setup for phone access to the same full Excalidraw UI.
+  --tunnel               Start a Canvas Tunnel after setup for phone access to the same full Excalidraw UI (Cloudflare by default).
   --ngrok-authtoken <token>
-                         Configure ngrok before starting --tunnel. Also reads BUZZASSIST_NGROK_AUTHTOKEN or NGROK_AUTHTOKEN.
+                         Opt into ngrok instead of Cloudflare and configure it. Also reads BUZZASSIST_NGROK_AUTHTOKEN or NGROK_AUTHTOKEN.
   --help                 Show this message.
 `;
 }
@@ -560,7 +560,7 @@ Configure Cursor only. Do not configure Codex, Claude Code, or Antigravity unles
 
 After the script prints \`BUZZASSIST_CANVAS_URL=...\` and \`BUZZASSIST_CANVAS_CHECK=ok\`, open that URL in Cursor's in-app browser or browser preview if available. If browser control is unavailable, report the URL and say setup completed because the canvas check passed.
 
-If the user wants phone/mobile access or the exact same Excalidraw UI outside this machine, run setup with \`--tunnel\` or run \`npm run tunnel:start -- --project-dir <active-user-project-dir>\`. If ngrok is not configured, ask for the user's personal ngrok authtoken or tell them to run \`ngrok config add-authtoken <token>\`. Give the printed \`BUZZASSIST_TUNNEL_ACCESS_URL\` for the phone.
+If the user wants phone/mobile access or the exact same Excalidraw UI outside this machine, run setup with \`--tunnel\` or run \`npm run tunnel:start -- --project-dir <active-user-project-dir>\`. The tunnel uses Cloudflare (\`cloudflared\`) by default — no account needed; if it is not installed, tell the user to run \`brew install cloudflared\`. Give the printed \`BUZZASSIST_TUNNEL_ACCESS_URL\` for the phone.
 `;
 }
 
@@ -573,7 +573,7 @@ When the user gives this repository URL and asks to set it up, do the setup end 
 2. Run \`node scripts/setup-agents.mjs --agent antigravity --project-dir <active-user-project-dir>\` from the repository root. If there is no separate active project, use this repository root as the project dir.
 3. The script must configure Antigravity only. Do not configure Codex, Claude Code, or Cursor unless the user explicitly asks for those hosts too.
 4. After the script prints \`BUZZASSIST_CANVAS_URL=...\` and \`BUZZASSIST_CANVAS_CHECK=ok\`, open that URL in Antigravity's in-app browser if available. If browser control is unavailable, report the URL and say that setup still completed because the canvas check passed.
-5. If the user wants phone/mobile access or says they want the exact same Excalidraw UI outside the machine, use Canvas Tunnel: run setup with \`--tunnel\` or run \`npm run tunnel:start -- --project-dir <active-user-project-dir>\`. If ngrok is not configured, ask the user for their personal ngrok authtoken or tell them to run \`ngrok config add-authtoken <token>\`. Give the printed \`BUZZASSIST_TUNNEL_ACCESS_URL\` for the phone.
+5. If the user wants phone/mobile access or says they want the exact same Excalidraw UI outside the machine, use Canvas Tunnel: run setup with \`--tunnel\` or run \`npm run tunnel:start -- --project-dir <active-user-project-dir>\`. The tunnel uses Cloudflare (\`cloudflared\`) by default — no account needed; if it is not installed, tell the user to run \`brew install cloudflared\`. Give the printed \`BUZZASSIST_TUNNEL_ACCESS_URL\` for the phone.
 
 Manual fallback:
 
@@ -751,7 +751,9 @@ async function launchCanvasTunnel() {
     canvasDir,
     "--restart",
   ];
-  if (ngrokAuthtoken) args.push("--ngrok-authtoken", ngrokAuthtoken);
+  // Default provider is Cloudflare (no bandwidth cap, no account). Passing an
+  // ngrok authtoken opts into ngrok explicitly.
+  if (ngrokAuthtoken) args.push("--provider", "ngrok", "--ngrok-authtoken", ngrokAuthtoken);
 
   if (dryRun) {
     logCommand(process.execPath, args);

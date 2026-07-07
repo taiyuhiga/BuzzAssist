@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_TUNNEL_SESSION = "buzzassist_ngrok_canvas";
+const DEFAULT_TUNNEL_SESSION = "buzzassist_canvas_tunnel";
+const LEGACY_TUNNEL_SESSIONS = ["buzzassist_ngrok_canvas", "buzzassist_cloudflared_canvas"];
 const DEFAULT_CANVAS_SESSION = "buzzassist_canvas_tunnel_server";
 const START_TIMEOUT_MS = 45_000;
 
@@ -17,6 +18,9 @@ const valueArgs = new Set([
   "--project-dir",
   "--canvas-dir",
   "--local-url",
+  "--provider",
+  "--cf-hostname",
+  "--cf-tunnel-name",
   "--ngrok-authtoken",
   "--access-token",
   "--user",
@@ -34,17 +38,26 @@ function usage() {
   npm run tunnel:stop -- [projectDir]
 
 Options:
+  --provider <name>            Tunnel provider: cloudflare (default) or ngrok. Also reads BUZZASSIST_TUNNEL_PROVIDER.
   --project-dir <path>         Project directory. Defaults to EXCALIDRAW_PROJECT_DIR or cwd.
   --canvas-dir <path>          Canvas data directory. Defaults to <projectDir>/canvas.
   --local-url <url>            Existing local canvas URL. Defaults to canvas/.server.json.
-  --ngrok-authtoken <token>    Configure ngrok before starting. Also reads BUZZASSIST_NGROK_AUTHTOKEN or NGROK_AUTHTOKEN.
   --access-token <token>       URL token for tunnel access. Defaults to a generated token.
+  --reuse-local                Reuse canvas/.server.json instead of starting a tunnel-ready canvas server.
+  --restart                    Restart an existing tunnel session.
+
+Cloudflare (default provider):
+  Zero-config quick tunnel (random *.trycloudflare.com URL, no bandwidth cap, no account).
+  --cf-hostname <host>         Serve a fixed named-tunnel hostname (e.g. canvas.buzzassist.ai).
+                               Requires a one-time \`cloudflared tunnel login\` and a created tunnel.
+  --cf-tunnel-name <name>      Named tunnel to run for --cf-hostname. Defaults to buzzassist-canvas.
+
+ngrok (fallback: --provider ngrok):
+  --ngrok-authtoken <token>    Configure ngrok before starting. Also reads BUZZASSIST_NGROK_AUTHTOKEN or NGROK_AUTHTOKEN.
   --basic-auth                 Also enable ngrok Basic Auth. Off by default because some in-app browsers do not show the auth prompt.
   --user <name>                Basic Auth user. Defaults to buzzassist.
   --password <password>        Basic Auth password. Defaults to a generated password.
-  --reuse-local                Reuse canvas/.server.json instead of starting a tunnel-ready canvas server.
   --no-compression             Disable ngrok gzip compression.
-  --restart                    Restart an existing tunnel session.
 `;
 }
 
@@ -130,9 +143,13 @@ function resolveConfig() {
       process.cwd(),
   );
   const canvasDir = resolve(readArg("--canvas-dir") || process.env.EXCALIDRAW_CANVAS_DIR || join(projectDir, "canvas"));
+  const provider = String(readArg("--provider") || process.env.BUZZASSIST_TUNNEL_PROVIDER || "cloudflare").toLowerCase();
   return {
     projectDir,
     canvasDir,
+    provider: provider === "ngrok" ? "ngrok" : "cloudflare",
+    cfHostname: readArg("--cf-hostname") || process.env.BUZZASSIST_TUNNEL_CF_HOSTNAME || "",
+    cfTunnelName: readArg("--cf-tunnel-name") || process.env.BUZZASSIST_TUNNEL_CF_NAME || "buzzassist-canvas",
     localUrl: readArg("--local-url") || process.env.BUZZASSIST_TUNNEL_LOCAL_URL || "",
     ngrokAuthtoken: readArg("--ngrok-authtoken") || process.env.BUZZASSIST_NGROK_AUTHTOKEN || process.env.NGROK_AUTHTOKEN || "",
     accessToken: readArg("--access-token") || process.env.BUZZASSIST_TUNNEL_ACCESS_TOKEN || randomBytes(16).toString("hex"),
@@ -156,6 +173,46 @@ function ngrokInstallHelp() {
     "  ngrok config add-authtoken <token>",
     "You can also run tunnel:start with --ngrok-authtoken <token> or set BUZZASSIST_NGROK_AUTHTOKEN.",
   ].join("\n");
+}
+
+function cloudflaredInstallHelp() {
+  return [
+    "cloudflared is required for the Cloudflare Canvas Tunnel.",
+    "Install it:",
+    "  macOS:   brew install cloudflared",
+    "  Windows: winget install Cloudflare.cloudflared",
+    "  Linux:   https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/",
+    "The default quick tunnel needs no account. For a fixed canvas.buzzassist.ai URL, run",
+    "`cloudflared tunnel login` once, then `--cf-hostname canvas.buzzassist.ai`.",
+  ].join("\n");
+}
+
+async function ensureCloudflaredReady(config) {
+  if (!await commandAvailable("cloudflared", ["--version"])) {
+    throw new Error(cloudflaredInstallHelp());
+  }
+  if (config.cfHostname) {
+    // Named tunnel needs the account cert produced by `cloudflared tunnel login`.
+    let hasCert = false;
+    try {
+      await execFileAsync("test", ["-f", join(process.env.HOME || "", ".cloudflared", "cert.pem")]);
+      hasCert = true;
+    } catch {
+      hasCert = false;
+    }
+    if (!hasCert) {
+      throw new Error([
+        `A fixed hostname (${config.cfHostname}) needs a logged-in cloudflared.`,
+        "Run `cloudflared tunnel login`, then `cloudflared tunnel create ${config.cfTunnelName}`,",
+        "or omit --cf-hostname to use a zero-config quick tunnel.",
+      ].join("\n"));
+    }
+  }
+}
+
+async function ensureProviderReady(config) {
+  if (config.provider === "ngrok") return ensureNgrokReady(config);
+  return ensureCloudflaredReady(config);
 }
 
 function tmuxInstallHelp() {
@@ -342,6 +399,76 @@ async function pinManagedCanvasOrigin(config, paths, { port, allowedOrigin }) {
   return waitForLocalCanvas(paths, { updatedAfterMs: startedAt });
 }
 
+function buildTunnelCommand(config, paths, localBaseUrl) {
+  if (config.provider === "ngrok") {
+    return [
+      `cd ${shellQuote(repoRoot)}`,
+      [
+        "exec ngrok http",
+        config.compression ? "--compression" : "",
+        config.basicAuth ? `--basic-auth ${shellQuote(`${config.user}:${config.password}`)}` : "",
+        `--log=${shellQuote(paths.logFile)}`,
+        "--log-format=json",
+        shellQuote(localBaseUrl),
+      ].filter(Boolean).join(" "),
+    ].join(" && ");
+  }
+  // Cloudflare: quick tunnel (zero-config) unless a named hostname is set.
+  const runArgs = config.cfHostname
+    ? ["tunnel", "--no-autoupdate", "run", "--url", localBaseUrl, config.cfTunnelName]
+    : ["tunnel", "--no-autoupdate", "--url", localBaseUrl];
+  return [
+    `cd ${shellQuote(repoRoot)}`,
+    [
+      "exec cloudflared",
+      ...runArgs.map(shellQuote),
+      `--logfile ${shellQuote(paths.logFile)}`,
+      "--loglevel info",
+    ].join(" "),
+  ].join(" && ");
+}
+
+function parseCloudflaredQuickUrl(logText) {
+  const match = String(logText || "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+  return match ? match[0] : "";
+}
+
+async function waitForCloudflaredUrl(paths) {
+  const started = Date.now();
+  while (Date.now() - started < START_TIMEOUT_MS) {
+    let logText = "";
+    try {
+      logText = await readFile(paths.logFile, "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const url = parseCloudflaredQuickUrl(logText);
+    if (url) return url;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+  }
+  throw new Error(`cloudflared quick tunnel URL was not assigned. Check ${paths.logFile}.`);
+}
+
+async function resolvePublicUrl(config, paths) {
+  if (config.provider === "ngrok") return waitForPublicUrl(paths);
+  if (config.cfHostname) return `https://${config.cfHostname.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+  return waitForCloudflaredUrl(paths);
+}
+
+// Point the named tunnel's DNS at the canvas hostname (idempotent: an existing
+// route errors, which we ignore).
+async function ensureCloudflareDnsRoute(config) {
+  if (config.provider !== "cloudflare" || !config.cfHostname) return;
+  try {
+    await execFileAsync("cloudflared", ["tunnel", "route", "dns", config.cfTunnelName, config.cfHostname], { timeout: 20_000 });
+  } catch (error) {
+    const message = String(error.stderr || error.message || "");
+    if (!/already|exists|record with that host/i.test(message)) {
+      throw new Error(`Failed to route ${config.cfHostname} to tunnel ${config.cfTunnelName}: ${message}`);
+    }
+  }
+}
+
 function parseNgrokPublicUrl(logText) {
   const lines = String(logText || "").trim().split(/\r?\n/).filter(Boolean).reverse();
   for (const line of lines) {
@@ -378,7 +505,7 @@ function printStatus(status, { active }) {
     if (status?.error) console.log(`Error: ${status.error}`);
     return;
   }
-  console.log(`Canvas tunnel: ${active ? "running" : "not running"}`);
+  console.log(`Canvas tunnel: ${active ? "running" : "not running"}${status.provider ? ` (${status.provider})` : ""}`);
   console.log(`URL: ${status.publicUrl}`);
   if (status.accessUrl) console.log(`Access URL: ${status.accessUrl}`);
   if (status.basicAuth) {
@@ -397,7 +524,8 @@ async function start() {
   if (!await commandAvailable("tmux", ["-V"])) {
     throw new Error(tmuxInstallHelp());
   }
-  await ensureNgrokReady(config);
+  await ensureProviderReady(config);
+  await ensureCloudflareDnsRoute(config);
 
   if (await tmuxHasSession(config.sessionName)) {
     if (!hasArg("--restart")) {
@@ -413,6 +541,7 @@ async function start() {
   await writeJson(paths.statusFile, {
     ok: false,
     state: "starting",
+    provider: config.provider,
     sessionName: config.sessionName,
     canvasSessionName: config.canvasSessionName,
     localBaseUrl,
@@ -423,20 +552,9 @@ async function start() {
   });
   await writeFile(paths.logFile, "", { mode: 0o600 });
 
-  const tunnelCommand = [
-    `cd ${shellQuote(repoRoot)}`,
-    [
-      "exec ngrok http",
-      config.compression ? "--compression" : "",
-      config.basicAuth ? `--basic-auth ${shellQuote(`${config.user}:${config.password}`)}` : "",
-      `--log=${shellQuote(paths.logFile)}`,
-      "--log-format=json",
-      shellQuote(localBaseUrl),
-    ].filter(Boolean).join(" "),
-  ].join(" && ");
-  await tmuxNewSession(config.sessionName, tunnelCommand);
+  await tmuxNewSession(config.sessionName, buildTunnelCommand(config, paths, localBaseUrl));
 
-  const publicUrl = await waitForPublicUrl(paths);
+  const publicUrl = await resolvePublicUrl(config, paths);
   const accessUrl = `${publicUrl.replace(/\/+$/, "")}/?t=${encodeURIComponent(config.accessToken)}`;
 
   // Now that the public URL exists, lock the managed canvas server's CORS
@@ -456,6 +574,7 @@ async function start() {
   const status = {
     ok: true,
     state: "running",
+    provider: config.provider,
     sessionName: config.sessionName,
     canvasSessionName: config.canvasSessionName,
     publicUrl,
@@ -491,7 +610,17 @@ async function stop() {
   const config = resolveConfig();
   const paths = pathsFor(config);
   const previous = await readJson(paths.statusFile, null);
-  const killed = await tmuxKillSession(config.sessionName);
+  // Kill the recorded session plus the current default and legacy names, so
+  // switching providers (ngrok -> cloudflare) never orphans an old session.
+  const tunnelSessionNames = [...new Set([
+    previous?.sessionName,
+    config.sessionName,
+    ...LEGACY_TUNNEL_SESSIONS,
+  ].filter(Boolean))];
+  let killed = false;
+  for (const name of tunnelSessionNames) {
+    if (await tmuxKillSession(name)) killed = true;
+  }
   // The canvas server we started for the tunnel carries a widened CORS
   // allow-list; leaving it running (as prior versions did) kept a
   // tunnel-configured server bound to .server.json after the tunnel was gone.

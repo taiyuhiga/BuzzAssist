@@ -25,8 +25,10 @@ node scripts/setup-agents.mjs --agent cursor --project-dir /path/to/active/proje
 node scripts/setup-agents.mjs --agent antigravity --project-dir /path/to/active/project
 ```
 
-Add `--tunnel` when phone access should be ready immediately. Pass
-`--ngrok-authtoken <token>` on first setup, or set `BUZZASSIST_NGROK_AUTHTOKEN`.
+Add `--tunnel` when phone access should be ready immediately. The tunnel uses
+Cloudflare (`cloudflared`) by default — no account needed for a quick tunnel.
+To use ngrok instead, set `BUZZASSIST_TUNNEL_PROVIDER=ngrok` and pass an
+`--ngrok-authtoken <token>` (or set `BUZZASSIST_NGROK_AUTHTOKEN`).
 
 The setup script installs dependencies when needed, builds the canvas UI when
 needed, refreshes a lightweight local marketplace at `~/plugins/buzzassist`
@@ -38,11 +40,11 @@ BUZZASSIST_CANVAS_URL=http://127.0.0.1:<port>/
 BUZZASSIST_CANVAS_CHECK=ok
 ```
 
-With `--tunnel`, it also starts ngrok and prints:
+With `--tunnel`, it also starts the tunnel and prints (Cloudflare by default):
 
 ```text
-BUZZASSIST_TUNNEL_URL=https://<slug>.ngrok-free.dev
-BUZZASSIST_TUNNEL_ACCESS_URL=https://<slug>.ngrok-free.dev/?t=<generated>
+BUZZASSIST_TUNNEL_URL=https://<slug>.trycloudflare.com
+BUZZASSIST_TUNNEL_ACCESS_URL=https://<slug>.trycloudflare.com/?t=<generated>
 BUZZASSIST_TUNNEL_CHECK=ok
 ```
 
@@ -93,20 +95,13 @@ canvas/assets/
 
 ## Mobile Full Canvas Tunnel
 
-For phone/mobile access, BuzzAssist uses **Canvas Tunnel**: an ngrok URL that
+For phone/mobile access, BuzzAssist uses **Canvas Tunnel**: a public URL that
 opens the same full local Excalidraw/BuzzAssist UI as the desktop canvas. This
 is the supported path when the user wants the left generator rail, canvas
 frames, prompt editing, selection behavior, and generated assets to behave like
 the local browser canvas.
 
-Each user uses their own ngrok account/authtoken. The plugin can configure it
-during setup:
-
-```bash
-node scripts/setup-agents.mjs --agent codex --project-dir /path/to/active/project --tunnel --ngrok-authtoken <token>
-```
-
-Or start/inspect/stop the tunnel later:
+Start/inspect/stop the tunnel:
 
 ```bash
 npm run tunnel:start
@@ -114,19 +109,49 @@ npm run tunnel:status
 npm run tunnel:stop
 ```
 
-The tunnel command prints the ngrok URL and an Access URL with a generated
+The tunnel command prints the public URL and an Access URL with a generated
 token. Open the Access URL on the phone; it sets a same-site cookie and then
 loads the same full canvas UI. Avoid editing heavily from desktop and phone at
 the same time.
 
-The tunnel is locked down to that one session: CORS is pinned to the exact ngrok
-URL (no `*.ngrok*` wildcard), and host-only endpoints — desktop chat keystroke
+### Provider: Cloudflare (default) or ngrok
+
+By default the tunnel uses **Cloudflare** via `cloudflared`, which has **no
+bandwidth cap** and needs no account for a quick tunnel (a random
+`*.trycloudflare.com` URL). Install it once:
+
+```bash
+brew install cloudflared      # macOS (or winget install Cloudflare.cloudflared)
+```
+
+For a **fixed** hostname like `canvas.buzzassist.ai` (Cloudflare already manages
+the domain), log in once and create a named tunnel, then pass the hostname:
+
+```bash
+cloudflared tunnel login                       # one-time browser auth
+cloudflared tunnel create buzzassist-canvas    # one-time
+npm run tunnel:start -- --cf-hostname canvas.buzzassist.ai
+```
+
+To use **ngrok** instead (per-account bandwidth cap, random URL), pass
+`--provider ngrok` and configure your own authtoken:
+
+```bash
+npm run tunnel:start -- --provider ngrok --ngrok-authtoken <token>
+```
+
+Cloudflare free plan caps a single request upload at 100 MB, so uploading a
+video larger than that from the phone will not go through (viewing, generating,
+and downloading are unaffected).
+
+The tunnel is locked down to that one session: CORS is pinned to the exact
+tunnel URL (no wildcard), and host-only endpoints — desktop chat keystroke
 injection (`/api/chat/send`), the OAuth login browser flow, and outbound probes —
 reject any request that arrives from the tunnel origin, so they stay usable only
 from the local browser. The tunnel also requires the generated access token for
 non-local hosts. `npm run tunnel:stop` stops the tunnel-managed canvas server it
-started, not just ngrok. If you explicitly want browser-native Basic Auth too,
-start with `npm run tunnel:start -- --basic-auth`.
+started, not just the tunnel process. For ngrok you can also enable
+browser-native Basic Auth with `--provider ngrok --basic-auth`.
 
 The MCP plugin also exposes:
 
