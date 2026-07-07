@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const isWindows = process.platform === "win32";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_TUNNEL_SESSION = "buzzassist_canvas_tunnel";
@@ -74,10 +76,6 @@ function positionalArgs() {
   return argv.filter((arg, index) => !arg.startsWith("--") && !valueArgs.has(argv[index - 1]));
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
 function execFileAsync(file, args, options = {}) {
   return new Promise((resolveExec, rejectExec) => {
     execFile(file, args, options, (error, stdout, stderr) => {
@@ -101,6 +99,77 @@ async function commandAvailable(commandName, args = ["--version"]) {
   }
 }
 
+// ---- Cross-platform background process management (replaces tmux) ----
+
+// Resolve a bare command name to an absolute path so detached spawn works on
+// Windows (PATHEXT) without a shell and without quoting hazards.
+async function resolveExecutable(name) {
+  if (name === process.execPath || name.includes("/") || name.includes("\\")) return name;
+  const finder = isWindows ? "where" : "which";
+  try {
+    const { stdout } = await execFileAsync(finder, [name]);
+    const first = String(stdout).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+    return first || name;
+  } catch {
+    return name;
+  }
+}
+
+function isProcessAlive(pid) {
+  const numeric = Number(pid);
+  if (!Number.isInteger(numeric) || numeric <= 0) return false;
+  try {
+    process.kill(numeric, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM"; // exists but owned by another user
+  }
+}
+
+async function killProcessTree(pid) {
+  const numeric = Number(pid);
+  if (!isProcessAlive(numeric)) return false;
+  if (isWindows) {
+    try {
+      await execFileAsync("taskkill", ["/pid", String(numeric), "/T", "/F"], { timeout: 10_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  // Unix: a detached child leads its own process group (pgid == pid); signal
+  // the whole group, then escalate to SIGKILL if it lingers.
+  const signalGroup = (signal) => {
+    try { process.kill(-numeric, signal); return true; }
+    catch { try { process.kill(numeric, signal); return true; } catch { return false; } }
+  };
+  signalGroup("SIGTERM");
+  await new Promise((r) => setTimeout(r, 500));
+  if (isProcessAlive(numeric)) signalGroup("SIGKILL");
+  return true;
+}
+
+// Spawn a detached, backgrounded process that survives this CLI exiting. Env
+// and cwd are passed directly (no shell string), so it is quoting-safe on
+// every platform. Returns the child pid.
+async function spawnBackground({ file, args, cwd, env, logFile }) {
+  const resolved = await resolveExecutable(file);
+  let stdio = ["ignore", "ignore", "ignore"];
+  let logHandle = null;
+  if (logFile) {
+    logHandle = await open(logFile, "a");
+    stdio = ["ignore", logHandle.fd, logHandle.fd];
+  }
+  try {
+    const child = spawn(resolved, args, { cwd, env, detached: true, stdio, windowsHide: true });
+    child.unref();
+    if (!child.pid) throw new Error(`Failed to start ${file} (no pid).`);
+    return child.pid;
+  } finally {
+    if (logHandle) await logHandle.close();
+  }
+}
+
 async function tmuxHasSession(name) {
   try {
     await execFileAsync("tmux", ["has-session", "-t", name]);
@@ -114,10 +183,6 @@ async function tmuxKillSession(name) {
   if (!await tmuxHasSession(name)) return false;
   await execFileAsync("tmux", ["kill-session", "-t", name]);
   return true;
-}
-
-async function tmuxNewSession(name, shellCommand) {
-  await execFileAsync("tmux", ["new-session", "-d", "-s", name, shellCommand]);
 }
 
 async function readJson(filePath, fallback = null) {
@@ -213,16 +278,6 @@ async function ensureCloudflaredReady(config) {
 async function ensureProviderReady(config) {
   if (config.provider === "ngrok") return ensureNgrokReady(config);
   return ensureCloudflaredReady(config);
-}
-
-function tmuxInstallHelp() {
-  return [
-    "tmux is required for tunnel:start to keep ngrok and the canvas server running.",
-    "Install it first:",
-    "  macOS:   brew install tmux",
-    "  Linux:   sudo apt install tmux / sudo dnf install tmux",
-    "On Windows, run from WSL or start the canvas manually and use --reuse-local --local-url <url>.",
-  ].join("\n");
 }
 
 async function ensureNgrokReady(config) {
@@ -332,22 +387,47 @@ async function waitForLocalCanvas(paths, options = {}) {
   throw new Error(`Canvas server did not become reachable. Check ${paths.serverLogFile}.`);
 }
 
-function buildCanvasCommand(config, paths, { port, allowedOrigin } = {}) {
-  // Default: no cross-origin allowance at all (local origins only). The exact
-  // tunnel origin is pinned via EXCALIDRAW_ALLOWED_ORIGINS on the post-tunnel
-  // restart, so we never leave the wildcard *.ngrok* allowance enabled.
-  const originExport = allowedOrigin
-    ? `unset EXCALIDRAW_ALLOW_TUNNEL_ORIGINS && export EXCALIDRAW_ALLOWED_ORIGINS=${shellQuote(allowedOrigin)}`
-    : `unset EXCALIDRAW_ALLOW_TUNNEL_ORIGINS EXCALIDRAW_ALLOWED_ORIGINS`;
-  const portArgs = port ? ` --port ${port} --strict-port` : "";
-  return [
-    `cd ${shellQuote(repoRoot)}`,
-    originExport,
-    `export EXCALIDRAW_TUNNEL_ACCESS_TOKEN=${shellQuote(config.accessToken)}`,
-    `export EXCALIDRAW_PROJECT_DIR=${shellQuote(config.projectDir)}`,
-    `export EXCALIDRAW_CANVAS_DIR=${shellQuote(config.canvasDir)}`,
-    `exec ${shellQuote(process.execPath)} ${shellQuote(join(repoRoot, "scripts", "serve-canvas.mjs"))} ${shellQuote(config.projectDir)}${portArgs} >> ${shellQuote(paths.serverLogFile)} 2>&1`,
-  ].join(" && ");
+// Environment for the managed canvas server. Default: no cross-origin
+// allowance at all (local origins only); the exact tunnel origin is pinned via
+// EXCALIDRAW_ALLOWED_ORIGINS on the post-tunnel restart, so we never leave the
+// wildcard *.ngrok*/*.trycloudflare* allowance enabled.
+function canvasServerEnv(config, { allowedOrigin } = {}) {
+  const env = { ...process.env };
+  delete env.EXCALIDRAW_ALLOW_TUNNEL_ORIGINS;
+  if (allowedOrigin) env.EXCALIDRAW_ALLOWED_ORIGINS = allowedOrigin;
+  else delete env.EXCALIDRAW_ALLOWED_ORIGINS;
+  env.EXCALIDRAW_TUNNEL_ACCESS_TOKEN = config.accessToken;
+  env.EXCALIDRAW_PROJECT_DIR = config.projectDir;
+  env.EXCALIDRAW_CANVAS_DIR = config.canvasDir;
+  return env;
+}
+
+function canvasServerSpawn(config, paths, { port, allowedOrigin } = {}) {
+  const args = [join(repoRoot, "scripts", "serve-canvas.mjs"), config.projectDir];
+  if (port) args.push("--port", String(port), "--strict-port");
+  return {
+    file: process.execPath,
+    args,
+    cwd: repoRoot,
+    env: canvasServerEnv(config, { allowedOrigin }),
+    logFile: paths.serverLogFile,
+  };
+}
+
+function tunnelSpawn(config, paths, localBaseUrl) {
+  if (config.provider === "ngrok") {
+    const args = ["http"];
+    if (config.compression) args.push("--compression");
+    if (config.basicAuth) args.push("--basic-auth", `${config.user}:${config.password}`);
+    args.push("--log", paths.logFile, "--log-format", "json", localBaseUrl);
+    return { file: "ngrok", args, cwd: repoRoot, env: process.env, logFile: null };
+  }
+  // Cloudflare: quick tunnel (zero-config) unless a named hostname is set.
+  const args = config.cfHostname
+    ? ["tunnel", "--no-autoupdate", "run", "--url", localBaseUrl, config.cfTunnelName]
+    : ["tunnel", "--no-autoupdate", "--url", localBaseUrl];
+  args.push("--logfile", paths.logFile, "--loglevel", "info");
+  return { file: "cloudflared", args, cwd: repoRoot, env: process.env, logFile: null };
 }
 
 function portFromUrl(url) {
@@ -359,73 +439,41 @@ function portFromUrl(url) {
   }
 }
 
-async function ensureLocalCanvas(config, paths) {
+async function ensureLocalCanvas(config, paths, previous) {
   const configuredUrl = String(config.localUrl || "").replace(/\/+$/, "");
   if (configuredUrl) {
     if (!await checkHttp(configuredUrl)) {
       throw new Error(`Configured local canvas URL is not reachable: ${configuredUrl}`);
     }
-    return { localBaseUrl: configuredUrl, managedCanvas: false };
+    return { localBaseUrl: configuredUrl, managedCanvas: false, canvasPid: null };
   }
 
   const discoveredUrl = await readDiscoveredLocalUrl(paths);
   if (config.reuseLocal && discoveredUrl && await checkHttp(discoveredUrl)) {
-    return { localBaseUrl: discoveredUrl, managedCanvas: false };
+    return { localBaseUrl: discoveredUrl, managedCanvas: false, canvasPid: null };
   }
 
-  if (!await commandAvailable("tmux", ["-V"])) {
-    throw new Error(`No reachable canvas server found, and tmux is not available to start one.\n${tmuxInstallHelp()}`);
+  // Reuse a still-running managed server from a previous start.
+  if (isProcessAlive(previous?.canvasPid) && discoveredUrl && await checkHttp(discoveredUrl)) {
+    return { localBaseUrl: discoveredUrl, managedCanvas: true, canvasPid: previous.canvasPid };
   }
 
-  if (!await tmuxHasSession(config.canvasSessionName)) {
-    const startedAt = Date.now() - 1000;
-    await tmuxNewSession(config.canvasSessionName, buildCanvasCommand(config, paths));
-    const localBaseUrl = await waitForLocalCanvas(paths, { updatedAfterMs: startedAt });
-    return { localBaseUrl, managedCanvas: true };
-  }
-
-  const localBaseUrl = await waitForLocalCanvas(paths);
-  return { localBaseUrl, managedCanvas: true };
+  const startedAt = Date.now() - 1000;
+  const canvasPid = await spawnBackground(canvasServerSpawn(config, paths));
+  const localBaseUrl = await waitForLocalCanvas(paths, { updatedAfterMs: startedAt });
+  return { localBaseUrl, managedCanvas: true, canvasPid };
 }
 
 // Restart the managed canvas server on the same port, this time allowing only
-// the exact public tunnel origin. ngrok keeps pointing at the fixed port and
-// reconnects across the brief restart.
-async function pinManagedCanvasOrigin(config, paths, { port, allowedOrigin }) {
+// the exact public tunnel origin. The tunnel keeps pointing at the fixed port
+// and reconnects across the brief restart. Returns the new pid.
+async function pinManagedCanvasOrigin(config, paths, { port, allowedOrigin, canvasPid }) {
   if (!port) throw new Error("Cannot pin tunnel origin without a fixed local port.");
   const startedAt = Date.now() - 1000;
-  await tmuxKillSession(config.canvasSessionName);
-  await tmuxNewSession(config.canvasSessionName, buildCanvasCommand(config, paths, { port, allowedOrigin }));
-  return waitForLocalCanvas(paths, { updatedAfterMs: startedAt });
-}
-
-function buildTunnelCommand(config, paths, localBaseUrl) {
-  if (config.provider === "ngrok") {
-    return [
-      `cd ${shellQuote(repoRoot)}`,
-      [
-        "exec ngrok http",
-        config.compression ? "--compression" : "",
-        config.basicAuth ? `--basic-auth ${shellQuote(`${config.user}:${config.password}`)}` : "",
-        `--log=${shellQuote(paths.logFile)}`,
-        "--log-format=json",
-        shellQuote(localBaseUrl),
-      ].filter(Boolean).join(" "),
-    ].join(" && ");
-  }
-  // Cloudflare: quick tunnel (zero-config) unless a named hostname is set.
-  const runArgs = config.cfHostname
-    ? ["tunnel", "--no-autoupdate", "run", "--url", localBaseUrl, config.cfTunnelName]
-    : ["tunnel", "--no-autoupdate", "--url", localBaseUrl];
-  return [
-    `cd ${shellQuote(repoRoot)}`,
-    [
-      "exec cloudflared",
-      ...runArgs.map(shellQuote),
-      `--logfile ${shellQuote(paths.logFile)}`,
-      "--loglevel info",
-    ].join(" "),
-  ].join(" && ");
+  await killProcessTree(canvasPid);
+  const newPid = await spawnBackground(canvasServerSpawn(config, paths, { port, allowedOrigin }));
+  await waitForLocalCanvas(paths, { updatedAfterMs: startedAt });
+  return newPid;
 }
 
 function parseCloudflaredQuickUrl(logText) {
@@ -517,44 +565,72 @@ function printStatus(status, { active }) {
   console.log(`Log file: ${status.logFile}`);
 }
 
+function isTunnelRunning(status) {
+  return isProcessAlive(status?.tunnelPid);
+}
+
+// Legacy cleanup: older versions kept tmux sessions instead of tracked pids.
+// Kill any that still exist so upgrading never orphans a running tunnel.
+async function killLegacyTmuxSessions(config, previous) {
+  if (!await commandAvailable("tmux", ["-V"])) return false;
+  const names = [...new Set([
+    previous?.sessionName,
+    previous?.canvasSessionName,
+    config.sessionName,
+    config.canvasSessionName,
+    ...LEGACY_TUNNEL_SESSIONS,
+  ].filter(Boolean))];
+  let killed = false;
+  for (const name of names) {
+    if (await tmuxKillSession(name)) killed = true;
+  }
+  return killed;
+}
+
 async function start() {
   const config = resolveConfig();
   const paths = pathsFor(config);
 
-  if (!await commandAvailable("tmux", ["-V"])) {
-    throw new Error(tmuxInstallHelp());
-  }
   await ensureProviderReady(config);
   await ensureCloudflareDnsRoute(config);
 
-  if (await tmuxHasSession(config.sessionName)) {
+  const previous = await readJson(paths.statusFile, null);
+  if (isTunnelRunning(previous)) {
     if (!hasArg("--restart")) {
-      const status = await readJson(paths.statusFile, null);
-      printStatus(status, { active: true });
+      printStatus(previous, { active: true });
       console.log("Use `npm run tunnel:start -- --restart` to replace the running tunnel.");
       return;
     }
-    await tmuxKillSession(config.sessionName);
+    await killProcessTree(previous.tunnelPid);
   }
+  // Always sweep any legacy tmux-based tunnel from older versions.
+  await killLegacyTmuxSessions(config, previous);
 
-  const { localBaseUrl, managedCanvas } = await ensureLocalCanvas(config, paths);
+  const { localBaseUrl, managedCanvas, canvasPid: initialCanvasPid } = await ensureLocalCanvas(config, paths, previous);
+  let canvasPid = initialCanvasPid;
   await writeJson(paths.statusFile, {
     ok: false,
     state: "starting",
     provider: config.provider,
-    sessionName: config.sessionName,
-    canvasSessionName: config.canvasSessionName,
     localBaseUrl,
     managedCanvas,
+    canvasPid,
     startedAt: new Date().toISOString(),
     statusFile: paths.statusFile,
     logFile: paths.logFile,
   });
   await writeFile(paths.logFile, "", { mode: 0o600 });
 
-  await tmuxNewSession(config.sessionName, buildTunnelCommand(config, paths, localBaseUrl));
+  const tunnelPid = await spawnBackground(tunnelSpawn(config, paths, localBaseUrl));
 
-  const publicUrl = await resolvePublicUrl(config, paths);
+  let publicUrl;
+  try {
+    publicUrl = await resolvePublicUrl(config, paths);
+  } catch (error) {
+    await killProcessTree(tunnelPid);
+    if (managedCanvas) await killProcessTree(canvasPid);
+    throw error;
+  }
   const accessUrl = `${publicUrl.replace(/\/+$/, "")}/?t=${encodeURIComponent(config.accessToken)}`;
 
   // Now that the public URL exists, lock the managed canvas server's CORS
@@ -563,10 +639,10 @@ async function start() {
   if (managedCanvas) {
     const localPort = portFromUrl(localBaseUrl);
     try {
-      await pinManagedCanvasOrigin(config, paths, { port: localPort, allowedOrigin: publicUrl });
+      canvasPid = await pinManagedCanvasOrigin(config, paths, { port: localPort, allowedOrigin: publicUrl, canvasPid });
     } catch (error) {
-      await tmuxKillSession(config.sessionName);
-      await tmuxKillSession(config.canvasSessionName);
+      await killProcessTree(tunnelPid);
+      await killProcessTree(canvasPid);
       throw new Error(`Failed to pin tunnel origin (${publicUrl}); tore down the tunnel: ${error.message}`);
     }
   }
@@ -575,8 +651,8 @@ async function start() {
     ok: true,
     state: "running",
     provider: config.provider,
-    sessionName: config.sessionName,
-    canvasSessionName: config.canvasSessionName,
+    tunnelPid,
+    canvasPid,
     publicUrl,
     accessUrl,
     localBaseUrl,
@@ -593,15 +669,15 @@ async function start() {
     startedAt: new Date().toISOString(),
   };
   await writeJson(paths.statusFile, status);
-  printStatus(status, { active: await tmuxHasSession(config.sessionName) });
+  printStatus(status, { active: isProcessAlive(tunnelPid) });
   printTunnelHealth(await probeTunnelAccessUrl(status));
 }
 
 async function status() {
   const config = resolveConfig();
   const paths = pathsFor(config);
-  const active = await tmuxHasSession(config.sessionName);
   const current = await readJson(paths.statusFile, null);
+  const active = isTunnelRunning(current);
   printStatus(current, { active });
   if (active) printTunnelHealth(await probeTunnelAccessUrl(current));
 }
@@ -610,36 +686,30 @@ async function stop() {
   const config = resolveConfig();
   const paths = pathsFor(config);
   const previous = await readJson(paths.statusFile, null);
-  // Kill the recorded session plus the current default and legacy names, so
-  // switching providers (ngrok -> cloudflare) never orphans an old session.
-  const tunnelSessionNames = [...new Set([
-    previous?.sessionName,
-    config.sessionName,
-    ...LEGACY_TUNNEL_SESSIONS,
-  ].filter(Boolean))];
-  let killed = false;
-  for (const name of tunnelSessionNames) {
-    if (await tmuxKillSession(name)) killed = true;
-  }
+
+  const killed = await killProcessTree(previous?.tunnelPid);
   // The canvas server we started for the tunnel carries a widened CORS
-  // allow-list; leaving it running (as prior versions did) kept a
-  // tunnel-configured server bound to .server.json after the tunnel was gone.
-  // Tear it down too whenever we managed it.
-  const canvasSessionName = previous?.canvasSessionName || config.canvasSessionName;
-  const canvasKilled = previous?.managedCanvas === false ? false : await tmuxKillSession(canvasSessionName);
+  // allow-list; leaving it running kept a tunnel-configured server bound to
+  // .server.json after the tunnel was gone. Tear it down too when we managed it.
+  const canvasKilled = previous?.managedCanvas === false ? false : await killProcessTree(previous?.canvasPid);
+  // Sweep any legacy tmux sessions from older versions as well.
+  const legacyKilled = await killLegacyTmuxSessions(config, previous);
+
   await writeJson(paths.statusFile, {
     ...(previous && typeof previous === "object" ? previous : {}),
     ok: false,
     state: "stopped",
     stoppedAt: new Date().toISOString(),
-    tmuxKilled: killed,
+    tunnelKilled: killed,
     canvasKilled,
+    legacyKilled,
     statusFile: paths.statusFile,
     logFile: paths.logFile,
   });
   const parts = [];
   if (killed) parts.push("tunnel");
   if (canvasKilled) parts.push("managed canvas server");
+  if (legacyKilled) parts.push("legacy session");
   console.log(parts.length ? `Stopped: ${parts.join(" + ")}.` : "Canvas tunnel was not running.");
 }
 
