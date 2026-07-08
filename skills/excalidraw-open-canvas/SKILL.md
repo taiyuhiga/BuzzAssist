@@ -46,14 +46,18 @@ BuzzAssist Remote Canvas:
 npm run tunnel:start -- --project-dir /path/to/user/project
 ```
 
-If ngrok is not configured, ask for the user's personal ngrok authtoken or tell
-them to run:
+Canvas Tunnel uses Cloudflare (`cloudflared`) by default. A quick tunnel needs
+no account; if `cloudflared` is not installed, tell the user to install it. For
+a fixed `canvas.buzzassist.ai` URL, the user runs `cloudflared tunnel login`
+once, then starts with `--cf-hostname canvas.buzzassist.ai`.
+
+Use ngrok only when the user explicitly asks for ngrok:
 
 ```bash
-ngrok config add-authtoken <token>
+npm run tunnel:start -- --project-dir /path/to/user/project --provider ngrok --ngrok-authtoken <token>
 ```
 
-The tunnel prints an ngrok URL and an Access URL. Give the Access URL to the
+The tunnel prints a public URL and an Access URL. Give the Access URL to the
 user for the phone. Continue to open the local `BUZZASSIST_CANVAS_URL` in the
 current host's in-app browser for desktop work. Do not use the OS/default
 browser unless the user explicitly asks.
