@@ -29,6 +29,19 @@ test("prompt panel keeps the desktop layout, scaled to fit on phones", async () 
   assert.match(source, /if \(kind === 'subtitle'\) return 300/);
 });
 
+test("phone tunnel hydrates only the viewport and evicts offscreen assets", async () => {
+  const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /const CANVAS_ASSET_PLACEHOLDER_DATA_URL = 'data:image\/gif;base64,/);
+  assert.match(source, /function isMemoryConstrainedCanvasRuntime\(\) \{\s*return isTunnelCanvasRuntime\(\) && isTouchLikeDevice\(\)\s*\}/);
+  assert.match(source, /placeholderAssetBackedFilesOutside\(runtimeScene, visibleFileIds\)/);
+  assert.match(source, /constrainHydratedAssetsToViewport\(scene, visibleFileIds\)/);
+  assert.match(source, /if \(memoryConstrained\) return/);
+  assert.match(source, /isTouchLikeDevice\(\)\s*\|\|\s*!initialScene/);
+  assert.match(source, /preload="metadata"/);
+  assert.doesNotMatch(source, /preload="auto"/);
+});
+
 test("left generator rail keeps requested utility tool order", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
   const image = source.indexOf('data-lovart-generator-kind="image"');

@@ -65,6 +65,7 @@ const COLLAPSED_FREEDRAW_MAX_DIMENSION = 1
 const TEXT_ATTACHMENT_EXTENSIONS = new Set(['txt', 'md', 'markdown'])
 const VIDEO_POSTER_FALLBACK_DATA_URL =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjgwIDcyMCI+PHJlY3Qgd2lkdGg9IjEyODAiIGhlaWdodD0iNzIwIiBmaWxsPSIjMTExODI3Ii8+PHBhdGggZD0iTTU2MCAyNTB2MjIwbDE5MC0xMTB6IiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIuOSIvPjwvc3ZnPg=='
+const CANVAS_ASSET_PLACEHOLDER_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
 const VIDEO_POSTER_CAPTURE_MAX_WIDTH = 960
 const VIDEO_POSTER_SCORE_SAMPLE_SIZE = 48
 const VIDEO_POSTER_GOOD_SCORE = 42
@@ -87,6 +88,10 @@ function isLocalCanvasHostname(hostname) {
 function isTunnelCanvasRuntime() {
   if (typeof window === 'undefined') return false
   return !isLocalCanvasHostname(window.location.hostname)
+}
+
+function isMemoryConstrainedCanvasRuntime() {
+  return isTunnelCanvasRuntime() && isTouchLikeDevice()
 }
 
 // Touch devices have no hover, so the desktop hover-to-play preview never
@@ -1278,6 +1283,57 @@ function restoreAssetBackedImageStatuses(elements, files) {
 }
 
 const assetDataURLCache = new Map()
+
+function assetBackedSourceUrl(file) {
+  if (typeof file?.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)) return file.codexAssetUrl
+  if (typeof file?.dataURL === 'string' && file.dataURL.startsWith(CANVAS_ASSETS_ROUTE)) return file.dataURL
+  return ''
+}
+
+function isHydratedAssetBackedFile(file) {
+  return (
+    isAssetBackedFileRecord(file) &&
+    typeof file?.dataURL === 'string' &&
+    file.dataURL.startsWith('data:') &&
+    file.dataURL !== CANVAS_ASSET_PLACEHOLDER_DATA_URL
+  )
+}
+
+function dehydrateAssetBackedFile(file) {
+  const assetUrl = persistedCanvasAssetUrl(assetBackedSourceUrl(file))
+  if (!assetUrl) return file
+  if (file.dataURL === CANVAS_ASSET_PLACEHOLDER_DATA_URL && file.codexAssetUrl === assetUrl) return file
+  return {
+    ...file,
+    dataURL: CANVAS_ASSET_PLACEHOLDER_DATA_URL,
+    codexAssetUrl: assetUrl,
+    codexAssetBacked: true
+  }
+}
+
+function placeholderAssetBackedFilesOutside(scene, keepFileIds) {
+  if (!scene?.files || !keepFileIds) return scene
+  const files = { ...scene.files }
+  let changed = false
+  for (const [id, file] of Object.entries(files)) {
+    if (!isAssetBackedFileRecord(file) || keepFileIds.has(id)) continue
+    if (file?.dataURL === CANVAS_ASSET_PLACEHOLDER_DATA_URL) continue
+    if (isHydratedAssetBackedFile(file)) evictAssetDataURLCacheForFile(file)
+    files[id] = dehydrateAssetBackedFile(file)
+    changed = true
+  }
+  return changed ? { ...scene, files } : scene
+}
+
+function evictAssetDataURLCacheForFile(file) {
+  const assetUrl = assetBackedSourceUrl(file)
+  if (!assetUrl) return
+  const candidates = new Set([assetUrl, withTunnelPreviewWidth(assetUrl), runtimeCanvasAssetUrl(assetUrl)])
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    assetDataURLCache.delete(canvasRequestInfo(candidate).url)
+  }
+}
 
 function readBlobAsDataURL(blob, url) {
   return new Promise((resolve, reject) => {
@@ -3198,7 +3254,7 @@ function VideoCanvasOverlay({ video, isHovered, onExpand }) {
           loop
           playsInline
           muted={autoPlayInline}
-          preload="auto"
+          preload="metadata"
           onLoadedData={() => setIsHoverVideoReady(true)}
           onCanPlay={() => setIsHoverVideoReady(true)}
           style={{ opacity: isHoverVideoReady ? 1 : 0 }}
@@ -3600,6 +3656,7 @@ export default function App() {
   const assetHydrationTimerRef = useRef(0)
   const hydratedFileBufferRef = useRef(new Map())
   const hydratedFlushTimerRef = useRef(0)
+  const visibleHydrationFileIdsRef = useRef(new Set())
 
   useEffect(() => {
     const controller = new AbortController()
@@ -3610,7 +3667,14 @@ export default function App() {
         if (!response.ok) throw new Error(`Failed to load canvas: ${response.status}`)
         const payload = await response.json()
         const diskScene = normalizeScene(payload.scene)
-        const scene = withRuntimeAssetBackedScene(diskScene)
+        const runtimeScene = withRuntimeAssetBackedScene(diskScene)
+        const visibleFileIds = isMemoryConstrainedCanvasRuntime()
+          ? visibleAssetBackedImageFileIds(runtimeScene, 560)
+          : null
+        const scene = visibleFileIds
+          ? placeholderAssetBackedFilesOutside(runtimeScene, visibleFileIds)
+          : runtimeScene
+        if (visibleFileIds) visibleHydrationFileIdsRef.current = visibleFileIds
         lastSyncedFingerprintRef.current = sceneFingerprint(diskScene)
         latestSceneRef.current = scene
         previousGeneratorFrameIdsRef.current = new Set(scene.elements.filter(isGeneratorFrame).map((element) => element.id))
@@ -3950,6 +4014,21 @@ export default function App() {
     if (initialScene) syncGeneratorUi(initialScene)
   }, [initialScene, syncGeneratorUi])
 
+  const constrainHydratedAssetsToViewport = useCallback((scene, keepFileIds) => {
+    if (!api || !scene || !isMemoryConstrainedCanvasRuntime()) return scene
+    const files = { ...(api.getFiles?.() ?? scene.files ?? {}) }
+    const constrainedScene = placeholderAssetBackedFilesOutside({ ...scene, files }, keepFileIds)
+    if (constrainedScene === scene || constrainedScene.files === files) return scene
+    const nextScene = createScene(scene.elements, scene.appState, constrainedScene.files)
+    latestSceneRef.current = nextScene
+    suppressNextChangeRef.current = true
+    api.updateScene({
+      files: constrainedScene.files,
+      captureUpdate: CaptureUpdateAction.NEVER
+    })
+    return nextScene
+  }, [api])
+
   // Apply a batch of freshly hydrated files in ONE scene update. Hydrating a
   // large canvas over the tunnel streams dozens of files; rebuilding and
   // re-rendering the whole scene per file pins a phone CPU, so buffered files
@@ -3958,8 +4037,11 @@ export default function App() {
     hydratedFlushTimerRef.current = 0
     const buffer = hydratedFileBufferRef.current
     if (!api || buffer.size === 0) return
-    const bufferedFiles = [...buffer.values()]
+    const memoryConstrained = isMemoryConstrainedCanvasRuntime()
+    const visibleFileIds = visibleHydrationFileIdsRef.current
+    const bufferedFiles = [...buffer.values()].filter((file) => !memoryConstrained || visibleFileIds.has(file.id))
     hydratedFileBufferRef.current = new Map()
+    if (bufferedFiles.length === 0) return
 
     api.addFiles(bufferedFiles)
     const fileIds = new Set(bufferedFiles.map((file) => file.id))
@@ -3990,12 +4072,15 @@ export default function App() {
     const currentAppState = api.getAppState?.() ?? latestSceneRef.current.appState
     const currentFiles = { ...(api.getFiles?.() ?? latestSceneRef.current.files ?? {}) }
     for (const file of bufferedFiles) currentFiles[file.id] = file
-    const nextScene = createScene(restoredElements, currentAppState, currentFiles)
+    const constrainedFiles = memoryConstrained
+      ? placeholderAssetBackedFilesOutside({ files: currentFiles }, visibleFileIds).files
+      : currentFiles
+    const nextScene = createScene(restoredElements, currentAppState, constrainedFiles)
     latestSceneRef.current = nextScene
     suppressNextChangeRef.current = true
     api.updateScene({
       elements: restoredElements,
-      files: currentFiles,
+      files: constrainedFiles,
       captureUpdate: CaptureUpdateAction.NEVER
     })
     refreshOverlayStates(nextScene)
@@ -4004,6 +4089,10 @@ export default function App() {
 
   const addHydratedAssetFile = useCallback((file) => {
     if (!api || !file?.id) return
+    if (isMemoryConstrainedCanvasRuntime() && !visibleHydrationFileIdsRef.current.has(file.id)) {
+      evictAssetDataURLCacheForFile(file)
+      return
+    }
     hydratedFileBufferRef.current.set(file.id, file)
     // Flush large backlogs immediately, otherwise coalesce a short burst.
     if (hydratedFileBufferRef.current.size >= 12) {
@@ -4020,11 +4109,13 @@ export default function App() {
     if (!api || !scene || !isTunnelCanvasRuntime()) return
     window.clearTimeout(assetHydrationTimerRef.current)
     assetHydrationTimerRef.current = window.setTimeout(() => {
-      const visibleFileIds = visibleAssetBackedImageFileIds(scene, 240)
+      const visibleFileIds = visibleAssetBackedImageFileIds(scene, isMemoryConstrainedCanvasRuntime() ? 560 : 240)
+      visibleHydrationFileIdsRef.current = visibleFileIds
+      constrainHydratedAssetsToViewport(scene, visibleFileIds)
       if (visibleFileIds.size === 0) return
       hydrateAssetBackedFiles(scene.files, addHydratedAssetFile, { onlyFileIds: visibleFileIds })
     }, 250)
-  }, [api, addHydratedAssetFile])
+  }, [api, addHydratedAssetFile, constrainHydratedAssetsToViewport])
 
   // Hydrate disk-backed file records once the Excalidraw API is ready.
   // Viewport-first: what is on screen hydrates immediately at full speed, then
@@ -4038,11 +4129,15 @@ export default function App() {
       if (!cancelled) addHydratedAssetFile(file)
     }
     const run = async () => {
-      const visibleFileIds = visibleAssetBackedImageFileIds(initialScene, 200)
+      const memoryConstrained = isMemoryConstrainedCanvasRuntime()
+      const visibleFileIds = visibleAssetBackedImageFileIds(initialScene, memoryConstrained ? 560 : 200)
+      visibleHydrationFileIdsRef.current = visibleFileIds
+      constrainHydratedAssetsToViewport(initialScene, visibleFileIds)
       if (visibleFileIds.size > 0) {
         await hydrateAssetBackedFiles(initialScene.files, addIfLive, { onlyFileIds: visibleFileIds })
         if (cancelled) return
       }
+      if (memoryConstrained) return
       const restIds = new Set(
         Object.values(initialScene.files ?? {})
           .filter((file) => isAssetBackedFileRecord(file) && !visibleFileIds.has(file.id))
@@ -4057,7 +4152,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [api, initialScene, addHydratedAssetFile])
+  }, [api, initialScene, addHydratedAssetFile, constrainHydratedAssetsToViewport])
 
   // Over the tunnel, a service worker keeps a persistent asset cache so repeat
   // visits paint instantly (even after the HTTP cache is evicted) and offscreen
@@ -4085,7 +4180,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!isTunnelCanvasRuntime() || !initialScene || typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+    if (
+      !isTunnelCanvasRuntime() ||
+      isTouchLikeDevice() ||
+      !initialScene ||
+      typeof navigator === 'undefined' ||
+      !('serviceWorker' in navigator)
+    ) return
     const previewUrl = (file) => {
       const base =
         typeof file.codexAssetUrl === 'string' && file.codexAssetUrl.startsWith(CANVAS_ASSETS_ROUTE)
@@ -4333,7 +4434,9 @@ export default function App() {
       // Disk-backed records hydrate asynchronously after the scene applies;
       // images pop in as each asset resolves instead of blocking the update.
       if (isTunnelCanvasRuntime()) {
-        const visibleFileIds = visibleAssetBackedImageFileIds(nextScene, 240)
+        const visibleFileIds = visibleAssetBackedImageFileIds(nextScene, isMemoryConstrainedCanvasRuntime() ? 560 : 240)
+        visibleHydrationFileIdsRef.current = visibleFileIds
+        constrainHydratedAssetsToViewport(nextScene, visibleFileIds)
         if (visibleFileIds.size > 0) {
           hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile, { onlyFileIds: visibleFileIds })
         }
@@ -4354,7 +4457,7 @@ export default function App() {
         }, 3000)
       }, 0)
     },
-    [api, addHydratedAssetFile, syncGeneratorUi]
+    [api, addHydratedAssetFile, constrainHydratedAssetsToViewport, syncGeneratorUi]
   )
 
   const openToolbarMediaPicker = useCallback(() => {
