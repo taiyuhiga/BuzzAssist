@@ -1698,24 +1698,25 @@ function getPanelPlacementFromViewportTarget(target, kind = 'image') {
       // width would collapse the bar pills; keep the desktop's max width.
       ? 560
       : clamp(Math.round(frameViewportWidth * 0.9), GENERATOR_PANEL_IMAGE_MIN_WIDTH, GENERATOR_PANEL_IMAGE_MAX_WIDTH)
-  // Phones only: the frame is wider than the screen, so cap the panel width and
-  // keep it fully on-screen instead of anchoring to the (off-screen) frame
-  // center. Desktop keeps the panel glued to its frame even past the edge.
+  // Phones: keep the EXACT desktop panel (same internal layout, no reflow) and
+  // shrink it visually with a CSS scale so it fits the screen width. The panel
+  // stays anchored to its frame like desktop (it may leave the screen when the
+  // user pans away), but on first open the frame is centered, so the scaled
+  // panel lands fully on-screen.
   const viewportWidth = typeof window !== 'undefined' ? (window.innerWidth || 0) : 0
-  const margin = 8
-  const clampToViewport = viewportWidth > 0 && viewportWidth <= 900
-  const panelWidth = clampToViewport ? Math.min(desiredWidth, viewportWidth - margin * 2) : desiredWidth
-  let rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
-  if (clampToViewport) {
-    rawLeft = clamp(rawLeft, margin, Math.max(margin, viewportWidth - panelWidth - margin))
-  }
+  const panelScale = viewportWidth > 0 && viewportWidth <= 900
+    ? Math.min(1, (viewportWidth - 16) / desiredWidth)
+    : 1
+  const panelWidth = desiredWidth
+  const rawLeft = Math.round((Number(target?.left) || 0) + frameViewportWidth / 2 - panelWidth / 2)
   const targetTop = Number(target?.top) || 0
   const rawTop = Math.round(targetTop + frameViewportHeight + 4)
 
   return {
     left: rawLeft,
     top: rawTop,
-    width: panelWidth
+    width: panelWidth,
+    scale: panelScale
   }
 }
 
@@ -6487,7 +6488,11 @@ export default function App() {
         top: `${panelPlacement.top}px`,
         bottom: 'auto',
         width: `${panelPlacement.width}px`,
-        transform: 'none'
+        // Phones shrink the whole desktop panel proportionally (same UI, just
+        // smaller) instead of reflowing it; origin "top center" keeps it
+        // centered under its frame.
+        transform: panelPlacement.scale && panelPlacement.scale < 1 ? `scale(${panelPlacement.scale})` : 'none',
+        transformOrigin: 'top center'
       }
     : undefined
   const closeOpenMenuIfOutsideGeneratorUi = (event) => {
