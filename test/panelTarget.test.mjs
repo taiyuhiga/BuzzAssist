@@ -29,13 +29,18 @@ test("prompt panel keeps the desktop layout, scaled to fit on phones", async () 
   assert.match(source, /if \(kind === 'subtitle'\) return 300/);
 });
 
-test("phone tunnel hydrates only the viewport and evicts offscreen assets", async () => {
+test("phone tunnel renders images via capped overlays instead of hydrating Excalidraw files", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 
   assert.match(source, /const CANVAS_ASSET_PLACEHOLDER_DATA_URL = 'data:image\/gif;base64,/);
-  assert.match(source, /function isMemoryConstrainedCanvasRuntime\(\) \{\s*return isTunnelCanvasRuntime\(\) && isTouchLikeDevice\(\)\s*\}/);
-  assert.match(source, /placeholderAssetBackedFilesOutside\(runtimeScene, visibleFileIds\)/);
-  assert.match(source, /constrainHydratedAssetsToViewport\(scene, visibleFileIds\)/);
+  assert.match(source, /const MOBILE_IMAGE_PREVIEW_OVERLAY_MAX_ITEMS = 8/);
+  assert.match(source, /function isNarrowCanvasViewport\(\)/);
+  assert.match(source, /function isMemoryConstrainedCanvasRuntime\(\) \{\s*return isTunnelCanvasRuntime\(\) && \(isTouchLikeDevice\(\) \|\| isNarrowCanvasViewport\(\)\)\s*\}/);
+  assert.match(source, /placeholderAssetBackedFilesByIds\(runtimeScene, assetBackedCanvasImageFileIds\(runtimeScene\)\)/);
+  assert.match(source, /function CanvasImagePreviewOverlay\(\{ image \}\)/);
+  assert.match(source, /selectedImageOverlays\.filter\(\(img\) => img\.assetType === 'image' && img\.assetUrl\)/);
+  assert.match(source, /MOBILE_IMAGE_PREVIEW_OVERLAY_MAX_ITEMS/);
+  assert.match(source, /is-memory-constrained-canvas/);
   assert.match(source, /if \(memoryConstrained\) return/);
   assert.match(source, /isTouchLikeDevice\(\)\s*\|\|\s*!initialScene/);
   assert.match(source, /preload="metadata"/);

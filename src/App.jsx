@@ -54,6 +54,7 @@ const ASSET_HYDRATION_CONCURRENCY = 6
 const OVERLAY_RENDER_MARGIN = 320
 const FRAME_OVERLAY_MAX_ITEMS = 320
 const MEDIA_HEADER_OVERLAY_MAX_ITEMS = 320
+const MOBILE_IMAGE_PREVIEW_OVERLAY_MAX_ITEMS = 8
 const VIDEO_PLAYBACK_OVERLAY_MAX_ITEMS = 120
 const SUBTITLE_PREVIEW_OVERLAY_MAX_ITEMS = 120
 const ATTACHMENT_CARD_WIDTH = 320
@@ -90,8 +91,12 @@ function isTunnelCanvasRuntime() {
   return !isLocalCanvasHostname(window.location.hostname)
 }
 
+function isNarrowCanvasViewport() {
+  return typeof window !== 'undefined' && Number(window.innerWidth) > 0 && Number(window.innerWidth) <= 900
+}
+
 function isMemoryConstrainedCanvasRuntime() {
-  return isTunnelCanvasRuntime() && isTouchLikeDevice()
+  return isTunnelCanvasRuntime() && (isTouchLikeDevice() || isNarrowCanvasViewport())
 }
 
 // Touch devices have no hover, so the desktop hover-to-play preview never
@@ -110,7 +115,7 @@ let cachedTunnelPreviewWidth = 0
 function tunnelPreviewWidth() {
   if (cachedTunnelPreviewWidth) return cachedTunnelPreviewWidth
   let width = 1600
-  if (typeof window !== 'undefined' && isTouchLikeDevice()) {
+  if (typeof window !== 'undefined' && (isTouchLikeDevice() || isNarrowCanvasViewport())) {
     // Size to the screen's SHORT edge (portrait width) × DPR — the widest an
     // image ever needs to fill the phone at native sharpness (~1170px on an
     // iPhone). Using the long edge/full physical resolution just pins to the
@@ -1318,6 +1323,38 @@ function placeholderAssetBackedFilesOutside(scene, keepFileIds) {
   for (const [id, file] of Object.entries(files)) {
     if (!isAssetBackedFileRecord(file) || keepFileIds.has(id)) continue
     if (file?.dataURL === CANVAS_ASSET_PLACEHOLDER_DATA_URL) continue
+    if (isHydratedAssetBackedFile(file)) evictAssetDataURLCacheForFile(file)
+    files[id] = dehydrateAssetBackedFile(file)
+    changed = true
+  }
+  return changed ? { ...scene, files } : scene
+}
+
+function assetBackedCanvasImageFileIds(scene) {
+  const files = scene?.files ?? {}
+  const ids = new Set()
+  for (const element of scene?.elements ?? []) {
+    if (
+      element?.type !== 'image' ||
+      element.isDeleted ||
+      element.customData?.codexMediaKind === 'video' ||
+      !element.fileId ||
+      !isAssetBackedFileRecord(files[element.fileId])
+    ) {
+      continue
+    }
+    ids.add(element.fileId)
+  }
+  return ids
+}
+
+function placeholderAssetBackedFilesByIds(scene, fileIds) {
+  if (!scene?.files || !(fileIds instanceof Set) || fileIds.size === 0) return scene
+  const files = { ...scene.files }
+  let changed = false
+  for (const id of fileIds) {
+    const file = files[id]
+    if (!isAssetBackedFileRecord(file) || file?.dataURL === CANVAS_ASSET_PLACEHOLDER_DATA_URL) continue
     if (isHydratedAssetBackedFile(file)) evictAssetDataURLCacheForFile(file)
     files[id] = dehydrateAssetBackedFile(file)
     changed = true
@@ -3152,6 +3189,36 @@ function SubtitleCanvasOverlay({ overlay, scrollOffset }) {
   )
 }
 
+function CanvasImagePreviewOverlay({ image }) {
+  const source = useMemo(() => {
+    if (!image.assetUrl) return ''
+    return canvasRequestInfo(withTunnelPreviewWidth(image.assetUrl)).url
+  }, [image.assetUrl])
+
+  if (!source) return null
+  return (
+    <div
+      className="lovart-image-preview-overlay"
+      style={{
+        left: `${image.left}px`,
+        top: `${image.top}px`,
+        width: `${image.width}px`,
+        height: `${image.height}px`,
+        transform: image.angle ? `rotate(${image.angle}rad)` : undefined
+      }}
+    >
+      <img
+        className="lovart-image-preview-media"
+        src={source}
+        alt=""
+        draggable={false}
+        decoding="async"
+        fetchPriority="high"
+      />
+    </div>
+  )
+}
+
 function VideoCanvasOverlay({ video, isHovered, onExpand }) {
   const hoverVideoRef = useRef(null)
   const containerRef = useRef(null)
@@ -3668,13 +3735,10 @@ export default function App() {
         const payload = await response.json()
         const diskScene = normalizeScene(payload.scene)
         const runtimeScene = withRuntimeAssetBackedScene(diskScene)
-        const visibleFileIds = isMemoryConstrainedCanvasRuntime()
-          ? visibleAssetBackedImageFileIds(runtimeScene, 560)
-          : null
-        const scene = visibleFileIds
-          ? placeholderAssetBackedFilesOutside(runtimeScene, visibleFileIds)
+        const scene = isMemoryConstrainedCanvasRuntime()
+          ? placeholderAssetBackedFilesByIds(runtimeScene, assetBackedCanvasImageFileIds(runtimeScene))
           : runtimeScene
-        if (visibleFileIds) visibleHydrationFileIdsRef.current = visibleFileIds
+        if (isMemoryConstrainedCanvasRuntime()) visibleHydrationFileIdsRef.current = new Set()
         lastSyncedFingerprintRef.current = sceneFingerprint(diskScene)
         latestSceneRef.current = scene
         previousGeneratorFrameIdsRef.current = new Set(scene.elements.filter(isGeneratorFrame).map((element) => element.id))
@@ -4108,8 +4172,12 @@ export default function App() {
   const scheduleVisibleAssetHydration = useCallback((scene) => {
     if (!api || !scene || !isTunnelCanvasRuntime()) return
     window.clearTimeout(assetHydrationTimerRef.current)
+    if (isMemoryConstrainedCanvasRuntime()) {
+      visibleHydrationFileIdsRef.current = new Set()
+      return
+    }
     assetHydrationTimerRef.current = window.setTimeout(() => {
-      const visibleFileIds = visibleAssetBackedImageFileIds(scene, isMemoryConstrainedCanvasRuntime() ? 560 : 240)
+      const visibleFileIds = visibleAssetBackedImageFileIds(scene, 240)
       visibleHydrationFileIdsRef.current = visibleFileIds
       constrainHydratedAssetsToViewport(scene, visibleFileIds)
       if (visibleFileIds.size === 0) return
@@ -4130,6 +4198,7 @@ export default function App() {
     }
     const run = async () => {
       const memoryConstrained = isMemoryConstrainedCanvasRuntime()
+      if (memoryConstrained) return
       const visibleFileIds = visibleAssetBackedImageFileIds(initialScene, memoryConstrained ? 560 : 200)
       visibleHydrationFileIdsRef.current = visibleFileIds
       constrainHydratedAssetsToViewport(initialScene, visibleFileIds)
@@ -4137,7 +4206,6 @@ export default function App() {
         await hydrateAssetBackedFiles(initialScene.files, addIfLive, { onlyFileIds: visibleFileIds })
         if (cancelled) return
       }
-      if (memoryConstrained) return
       const restIds = new Set(
         Object.values(initialScene.files ?? {})
           .filter((file) => isAssetBackedFileRecord(file) && !visibleFileIds.has(file.id))
@@ -4403,7 +4471,10 @@ export default function App() {
       saveTimerRef.current = null
       hasLocalChangesRef.current = false
       const diskNormalized = normalizeScene(scene)
-      const normalized = withRuntimeAssetBackedScene(diskNormalized)
+      const runtimeNormalized = withRuntimeAssetBackedScene(diskNormalized)
+      const normalized = isMemoryConstrainedCanvasRuntime()
+        ? placeholderAssetBackedFilesByIds(runtimeNormalized, assetBackedCanvasImageFileIds(runtimeNormalized))
+        : runtimeNormalized
       const remoteApplyVersion = localChangeVersionRef.current
       lastSyncedFingerprintRef.current = sceneFingerprint(diskNormalized)
       latestSceneRef.current = normalized
@@ -4434,11 +4505,15 @@ export default function App() {
       // Disk-backed records hydrate asynchronously after the scene applies;
       // images pop in as each asset resolves instead of blocking the update.
       if (isTunnelCanvasRuntime()) {
-        const visibleFileIds = visibleAssetBackedImageFileIds(nextScene, isMemoryConstrainedCanvasRuntime() ? 560 : 240)
-        visibleHydrationFileIdsRef.current = visibleFileIds
-        constrainHydratedAssetsToViewport(nextScene, visibleFileIds)
-        if (visibleFileIds.size > 0) {
+        if (isMemoryConstrainedCanvasRuntime()) {
+          visibleHydrationFileIdsRef.current = new Set()
+        } else {
+          const visibleFileIds = visibleAssetBackedImageFileIds(nextScene, 240)
+          visibleHydrationFileIdsRef.current = visibleFileIds
+          constrainHydratedAssetsToViewport(nextScene, visibleFileIds)
+          if (visibleFileIds.size > 0) {
           hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile, { onlyFileIds: visibleFileIds })
+          }
         }
       } else {
         hydrateAssetBackedFiles(normalized.files, addHydratedAssetFile)
@@ -6523,6 +6598,14 @@ export default function App() {
   const isCurrentFrameGenerating = activeFrameId ? generatingFrameIds.has(activeFrameId) : false
   const activePanelTarget = livePanelTarget ?? activeOverlay ?? selectedGeneratedResult
   const showPromptPanel = Boolean(activePanelTarget && !isCurrentFrameGenerating)
+  const memoryConstrainedCanvas = isMemoryConstrainedCanvasRuntime()
+  const imagePreviewOverlays = memoryConstrainedCanvas
+    ? limitViewportOverlays(
+        selectedImageOverlays.filter((img) => img.assetType === 'image' && img.assetUrl),
+        latestSceneRef.current?.appState ?? {},
+        MOBILE_IMAGE_PREVIEW_OVERLAY_MAX_ITEMS
+      )
+    : []
   // One canonical entry per model; the execution route (Codex / Hermes /
   // BuzzAssist / Lovart) is chosen per model in the settings row and mapped
   // to the concrete backend id stored in frameForm.
@@ -6661,7 +6744,7 @@ export default function App() {
 
   return (
     <main
-      className={`codex-excalidraw-shell lovart-ai-root${showPromptPanel || managedSelectionActive ? ' hide-generator-props' : ''}`}
+      className={`codex-excalidraw-shell lovart-ai-root${showPromptPanel || managedSelectionActive ? ' hide-generator-props' : ''}${memoryConstrainedCanvas ? ' is-memory-constrained-canvas' : ''}`}
       aria-label="Codex Excalidraw canvas"
       onPointerDownCapture={closeOpenMenuIfOutsideGeneratorUi}
       onMouseDownCapture={closeOpenMenuIfOutsideGeneratorUi}
@@ -6904,6 +6987,10 @@ export default function App() {
       </div>
     )
   })}
+
+      {imagePreviewOverlays.map((image) => (
+        <CanvasImagePreviewOverlay key={image.id} image={image} />
+      ))}
 
       {videoPlaybackOverlays.map((video) => (
         <VideoCanvasOverlay
