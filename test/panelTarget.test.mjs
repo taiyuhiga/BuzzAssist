@@ -34,6 +34,7 @@ test("phone tunnel renders images via capped overlays instead of hydrating Excal
 
   assert.match(source, /const CANVAS_ASSET_PLACEHOLDER_DATA_URL = 'data:image\/gif;base64,/);
   assert.match(source, /const MOBILE_IMAGE_PREVIEW_OVERLAY_MAX_ITEMS = 8/);
+  assert.match(source, /import \{[^}]*useMemo[^}]*\} from 'react'/s);
   assert.match(source, /function isNarrowCanvasViewport\(\)/);
   assert.match(source, /function isMemoryConstrainedCanvasRuntime\(\) \{\s*return isTunnelCanvasRuntime\(\) && \(isTouchLikeDevice\(\) \|\| isNarrowCanvasViewport\(\)\)\s*\}/);
   assert.match(source, /placeholderAssetBackedFilesByIds\(runtimeScene, assetBackedCanvasImageFileIds\(runtimeScene\)\)/);

@@ -5,7 +5,7 @@ import {
 } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import { generateKeyBetween } from 'fractional-indexing'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   IMAGE_MODEL_FAMILIES,
   MEDIA_ROUTES,
