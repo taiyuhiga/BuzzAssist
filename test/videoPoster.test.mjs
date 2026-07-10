@@ -23,7 +23,7 @@ test("local video thumbnails avoid the first black frame", async () => {
 
 test("video reference cards render poster images instead of video URLs", async () => {
   const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
-  const normalizeAssetList = appSource.match(/function normalizeAssetList\(value\) \{\n([\s\S]*?)\n\}/);
+  const normalizeAssetList = appSource.match(/function normalizeAssetList\(value\) \{\r?\n([\s\S]*?)\r?\n\}/);
   assert.ok(normalizeAssetList, "Missing normalizeAssetList");
 
   assert.match(

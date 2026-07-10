@@ -89,7 +89,7 @@ test("all generation routes require BuzzAssist login through the shared dialog",
 
 test("uploaded canvas media does not open the generator prompt panel", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
-  const match = source.match(/function isPanelMediaTargetElement\(element\) \{\n([\s\S]*?)\n\}/);
+  const match = source.match(/function isPanelMediaTargetElement\(element\) \{\r?\n([\s\S]*?)\r?\n\}/);
   assert.ok(match, "Missing isPanelMediaTargetElement");
   assert.match(match[1], /isGeneratedResult\(element\)/);
   assert.doesNotMatch(match[1], /isCanvasImageElement\(element\)/);
@@ -98,7 +98,7 @@ test("uploaded canvas media does not open the generator prompt panel", async () 
 
 test("generated media labels resolve to their backing result for panel selection only", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
-  const helper = source.match(/function panelMediaTargetIdFromSelection\(selectedIds, elementsById\) \{\n([\s\S]*?)\n\}/);
+  const helper = source.match(/function panelMediaTargetIdFromSelection\(selectedIds, elementsById\) \{\r?\n([\s\S]*?)\r?\n\}/);
   assert.ok(helper, "Missing panelMediaTargetIdFromSelection");
 
   assert.match(helper[1], /if \(selectedIds\.length !== 1\) return ''/);
@@ -113,7 +113,7 @@ test("generated media labels resolve to their backing result for panel selection
 
 test("canvas picker resolves media labels and keeps picking on invalid asset types", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
-  const helper = source.match(/function selectedCanvasAttachableElementFromScene\(scene\) \{\n([\s\S]*?)\n\}/);
+  const helper = source.match(/function selectedCanvasAttachableElementFromScene\(scene\) \{\r?\n([\s\S]*?)\r?\n\}/);
   assert.ok(helper, "Missing selectedCanvasAttachableElementFromScene");
 
   assert.match(helper[1], /if \(direct && !isGeneratorFrame\(direct\) && isCanvasAttachableElement\(direct\)\) return direct/);
@@ -278,7 +278,7 @@ test("dragging selected media translates overlay nodes instead of rebuilding per
   // Drag-end rebuilds run synchronously (not rAF-deferred) while a drag
   // translate is applied, so the fresh prompt-panel position and the
   // translate reset land in the same paint — no one-frame double offset.
-  const overlayScheduler = source.match(/const scheduleOverlayRefresh = useCallback\(\(scene\) => \{([\s\S]*?)\n  \}, \[refreshOverlayStates\]\)/);
+  const overlayScheduler = source.match(/const scheduleOverlayRefresh = useCallback\(\(scene\) => \{([\s\S]*?)\r?\n  \}, \[refreshOverlayStates\]\)/);
   assert.ok(overlayScheduler, "missing scheduleOverlayRefresh");
   assert.match(overlayScheduler[1], /if \(dragOverlayNodesRef\.current\) \{/);
   assert.match(overlayScheduler[1], /refreshOverlayStates\(scene\)\s*\n\s*return/);
@@ -533,7 +533,7 @@ test("aspect ratio changes resize the selected generator frame immediately", asy
 test("programmatic scene echoes do not resync or close the generator panel", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 
-  const suppressedBranch = source.match(/if \(shouldSkipChangeEffects\) \{\n([\s\S]*?)\n      \}/);
+  const suppressedBranch = source.match(/if \(shouldSkipChangeEffects\) \{\r?\n([\s\S]*?)\r?\n      \}/);
   assert.ok(suppressedBranch, "missing suppressed change branch");
   assert.match(suppressedBranch[1], /scheduleOverlayRefresh\(scene\)/);
   assert.match(suppressedBranch[1], /scheduleSelectionSave\(scene\)/);
@@ -563,7 +563,7 @@ test("deferred internal scene updates only suppress the updateScene echo", async
 
 test("remote scene application preserves current selection before syncing UI", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
-  const applyRemote = source.match(/const applyRemoteScene = useCallback\(\n([\s\S]*?)\n  const openToolbarMediaPicker/);
+  const applyRemote = source.match(/const applyRemoteScene = useCallback\(\r?\n([\s\S]*?)\r?\n  const openToolbarMediaPicker/);
   assert.ok(applyRemote, "missing applyRemoteScene block");
 
   assert.match(applyRemote[1], /const remoteApplyVersion = localChangeVersionRef\.current/);

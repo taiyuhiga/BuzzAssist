@@ -4,27 +4,35 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_SERVICE_NAME = "excalidraw-codex-image-bridge";
 const CODEX_PROBE_TIMEOUT_MS = 8_000;
 
-function codexDesktopCandidates() {
-  if (process.platform === "darwin") {
+export function codexPathCommands(platform = process.platform) {
+  return platform === "win32" ? ["codex.exe", "codex.cmd", "codex"] : ["codex"];
+}
+
+export function codexDesktopCandidates({
+  platform = process.platform,
+  homeDir = os.homedir(),
+  env = process.env,
+} = {}) {
+  if (platform === "darwin") {
     return [
       "/Applications/ChatGPT.app/Contents/Resources/codex",
-      join(os.homedir(), "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
+      posix.join(homeDir, "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
       "/Applications/Codex.app/Contents/Resources/codex",
-      join(os.homedir(), "Applications", "Codex.app", "Contents", "Resources", "codex"),
+      posix.join(homeDir, "Applications", "Codex.app", "Contents", "Resources", "codex"),
     ];
   }
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     return [
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Programs", "ChatGPT", "resources", "codex.exe"),
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "ChatGPT", "resources", "codex.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "ChatGPT", "resources", "codex.exe"),
+      env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, "Programs", "ChatGPT", "resources", "codex.exe"),
+      env.PROGRAMFILES && win32.join(env.PROGRAMFILES, "ChatGPT", "resources", "codex.exe"),
+      env["PROGRAMFILES(X86)"] && win32.join(env["PROGRAMFILES(X86)"], "ChatGPT", "resources", "codex.exe"),
     ].filter(Boolean);
   }
   return [];
@@ -98,7 +106,7 @@ export async function resolveCodexCommand() {
   const explicit = nonEmptyString(process.env.CODEX_COMMAND);
   if (explicit) return explicit;
 
-  const pathCommands = process.platform === "win32" ? ["codex.exe", "codex.cmd", "codex"] : ["codex"];
+  const pathCommands = codexPathCommands();
   const candidates = [
     ...pathCommands.map((command) => ({ command, source: "path" })),
     ...codexDesktopCandidates().map((command) => ({ command, source: "desktop" })),

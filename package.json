@@ -54,7 +54,7 @@
     "tunnel:start": "node scripts/canvas-tunnel.mjs start",
     "tunnel:status": "node scripts/canvas-tunnel.mjs status",
     "tunnel:stop": "node scripts/canvas-tunnel.mjs stop",
-    "test": "node --test test/*.test.mjs && node scripts/test-fal-payloads.mjs && node scripts/test-setup-distribution.mjs",
+    "test": "node scripts/run-tests.mjs",
     "test:setup": "node scripts/test-setup-distribution.mjs",
     "prepack": "npm run build",
     "postinstall": "node scripts/patch-excalidraw.mjs"

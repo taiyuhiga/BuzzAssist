@@ -2,12 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { resolveCodexCommand } from "../scripts/codex-image-bridge.mjs";
+import {
+  codexDesktopCandidates,
+  codexPathCommands,
+  resolveCodexCommand,
+} from "../scripts/codex-image-bridge.mjs";
 
-test("Codex image bridge auto-detects a usable Codex client", async () => {
-  const command = await resolveCodexCommand();
-  assert.equal(typeof command, "string");
-  assert.ok(command === "codex" || /(?:ChatGPT|Codex)\.app/.test(command));
+test("Codex image bridge probes the platform-specific CLI commands", () => {
+  assert.deepEqual(codexPathCommands("darwin"), ["codex"]);
+  assert.deepEqual(codexPathCommands("linux"), ["codex"]);
+  assert.deepEqual(codexPathCommands("win32"), ["codex.exe", "codex.cmd", "codex"]);
 });
 
 test("explicit CODEX_COMMAND remains the highest-priority override", async () => {
@@ -21,20 +25,22 @@ test("explicit CODEX_COMMAND remains the highest-priority override", async () =>
   }
 });
 
-test("ChatGPT desktop bundled Codex works without a separately installed CLI on macOS", async (t) => {
-  if (process.platform !== "darwin") return t.skip("macOS-only bundled app path");
-  const previousCommand = process.env.CODEX_COMMAND;
-  const previousPath = process.env.PATH;
-  delete process.env.CODEX_COMMAND;
-  process.env.PATH = "/usr/bin:/bin";
-  try {
-    const command = await resolveCodexCommand();
-    assert.match(command, /ChatGPT\.app\/Contents\/Resources\/codex$/);
-  } finally {
-    if (previousCommand === undefined) delete process.env.CODEX_COMMAND;
-    else process.env.CODEX_COMMAND = previousCommand;
-    process.env.PATH = previousPath;
-  }
+test("ChatGPT desktop bundled Codex candidates are available without a separate CLI", () => {
+  const candidates = codexDesktopCandidates({ platform: "darwin", homeDir: "/Users/test" });
+  assert.deepEqual(candidates, [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Users/test/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Users/test/Applications/Codex.app/Contents/Resources/codex",
+  ]);
+  assert.deepEqual(
+    codexDesktopCandidates({
+      platform: "win32",
+      homeDir: "C:\\Users\\test",
+      env: { LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local" },
+    }),
+    ["C:\\Users\\test\\AppData\\Local\\Programs\\ChatGPT\\resources\\codex.exe"],
+  );
 });
 
 test("agent setup reuses the same ChatGPT/Codex auto-detection", async () => {
