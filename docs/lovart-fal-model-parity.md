@@ -194,22 +194,22 @@ fal.ai: `ideogram/v4`, `/image-to-image`（`/fast`, `/lora` 変種あり）
 
 # 動画モデル (15)
 
-## Seedance 2.0 系（無印 / Fast / Mini）⚠️ premium・API無反応
+## Seedance 2.0 系（無印 / Fast / Mini）premium・利用可能（R4/R5検証済み）
 
 fal.ai: `bytedance/seedance-2.0/{,fast/,mini/}{text-to-video,image-to-video,reference-to-video}`
 
 | fal.aiパラメータ | 仕様（モデル差） | Lovart対応 |
 |---|---|---|
-| `resolution` | 無印: 480p/720p/1080p/**4k** / Fast・Mini: 480p/720pのみ | ✕ **API経由で生成自体が無反応**（T4/T5実証）。以下全パラメータ同様 |
-| `duration` | auto, 4–15秒 | ✕ 同上 |
-| `aspect_ratio` | auto + 6種（21:9〜9:16） | ✕ 同上 |
-| `generate_audio` | bool（既定true、SFX+リップシンク） | ✕ 同上 |
-| `bitrate_mode` | 無印・Fast: standard/high（Miniなし） | ✕ 同上 |
-| 参照入力（r2v） | **画像9 + 動画3 + 音声3（計12ファイルまで）**、`@Image1`等で参照 | ✕ 同上 |
-| `end_image_url`（i2v） | 終了フレーム | ✕ 同上 |
+| `resolution` | 無印: 480p/720p/1080p/**4k** / Fast・Mini: 480p/720pのみ | ○ 480p反映実証（R4-1: 496×864） |
+| `duration` | auto, 4–15秒 | ○ 4秒反映実証（R4-1: 4.04s） |
+| `aspect_ratio` | auto + 6種（21:9〜9:16） | ○ 9:16反映実証（R4-1） |
+| `generate_audio` | bool（既定true、SFX+リップシンク） | ○ 無音指示実証（R4-1: 音声トラックなし） |
+| `bitrate_mode` | 無印・Fast: standard/high（Miniなし） | △ 指示可・未検証 |
+| 参照入力（r2v） | **画像9 + 動画3 + 音声3（計12ファイルまで）**、`@Image1`等で参照 | ◎ 添付送達保証＋役割注釈。参照画像→動画のキャラ一致を実証（R5-A） |
+| `end_image_url`（i2v） | 終了フレーム | ◎ 役割注釈付き添付で送信（R5で同系実証） |
 | seed | 入力不可（出力のみ） | — |
 
-※Web UIでは使える可能性あり。API開放されたら参照上限（現UI3枚）を12まで引き上げる価値が大きい。
+※初回検証（07-10昼）ではサイレント失敗していたが同日夜に開放（冒頭の「プレミアム動画モデル」参照）。UIの参照上限はfal仕様（9/3/3）に合わせて実装済み。
 
 ## Seedance 1.5 Pro（非premium・API利用可能）
 
@@ -227,7 +227,7 @@ fal.ai: `fal-ai/bytedance/seedance/v1.5/pro/{text-to-video,image-to-video}`
 | `enable_safety_checker` | bool | ✕ |
 | 参照r2vエンドポイント | **なし**（開始+終了フレームのみ） | — |
 
-## Kling 系（3.0 / 3.0 Omni / 2.6 / O1）⚠️ 全てpremium・API無反応
+## Kling 系（3.0 / 3.0 Omni / 2.6 / O1）premium・利用可能（R4検証済み）
 
 fal.ai: `fal-ai/kling-video/v3/*`, `o3/*`（=3.0 Omni）, `v2.6/*`, `o1/*`（=O1）
 
@@ -246,9 +246,9 @@ fal.ai: `fal-ai/kling-video/v3/*`, `o3/*`（=3.0 Omni）, `v2.6/*`, `o1/*`（=O1
 | モーションコントロール | ✕ | ✕ | ○（専用EP、参照動画の動きコピー） | ✕ |
 | `voice_ids`（ボイス指定） | ✕ | ✕ | pro i2vのみ | ✕ |
 
-Lovart対応: 全パラメータ ✕（API経由でモデル自体が無反応の可能性が高い。Seedance 2.0系と同じpremiumフラグ）。
+Lovart対応: Kling 2.6で実生成検証済み（R4-4: 1920×1080・5.04秒・無音指示反映、見積22クレジット）。秒数・比率・音声のプロンプト指示は反映される。negative_prompt・cfg_scale・multi_prompt・elementsは△（指示可・未検証）。UIはfal仕様どおり秒数（2.6は5/10固定、v3/o3は3–15）・音声トグル・参照上限を実装済み。
 
-## Veo 系（3.1 / 3.1 Fast / 3）⚠️ 全てpremium・API無反応
+## Veo 系（3.1 / 3.1 Fast / 3）premium・利用可能（R4検証済み）
 
 fal.ai: `fal-ai/veo3.1{,/fast}` + `/image-to-video`, `/first-last-frame-to-video`, `/reference-to-video`, `/extend-video`。Veo 3は**fal側で非推奨（サポート終了）**。
 
@@ -257,9 +257,9 @@ fal.ai: `fal-ai/veo3.1{,/fast}` + `/image-to-video`, `/first-last-frame-to-video
 - `generate_audio`（既定true）、`negative_prompt`、`seed`、`auto_fix`（ポリシー违反プロンプト自動修正）、`safety_tolerance` 1–6
 - 開始/終了フレーム、参照画像（reference-to-video）、**動画延長（7秒/回×最大20回=約148秒）**
 
-Lovart対応: 全パラメータ ✕（premium・API無反応の可能性が高い）。
+Lovart対応: Veo 3.1 Fastで実生成検証済み（R4-2: 1280×720・4.06秒・音声あり、見積48クレジット）。秒数・解像度・比率・音声の指示は反映される。UIは4/6/8秒ボタン＋720p/1080p/4K＋音声トグルを実装済み。negative_prompt・seed・動画延長は△/✕。
 
-## Gemini Omni Flash ⚠️ premium・API無反応
+## Gemini Omni Flash premium・利用可能（R4検証済み）
 
 fal.ai: `google/gemini-omni-flash`（+ `/image-to-video`, `/reference-to-video`, `/edit`）
 
@@ -267,7 +267,7 @@ fal.ai: `google/gemini-omni-flash`（+ `/image-to-video`, `/reference-to-video`,
 - 解像度・seed・negative promptなし。**音声は常時生成**（オフ不可、プロンプトで内容指示）
 - ユニーク機能: `<IMAGE_REF_n>`タグでの参照バインド、会話的動画編集EP
 
-Lovart対応: 全パラメータ ✕（premium）。
+Lovart対応: 実生成検証済み（R4-3: 720×1280・3.008秒・音声あり、見積72クレジット）。秒数・比率の指示は反映される。UIは3–10秒スライダー＋16:9/9:16＋「音声常時オン」バッジを実装済み。
 
 ## Hailuo 2.3（非premium・API利用可能）
 
@@ -324,7 +324,7 @@ fal.ai: `fal-ai/vidu/q2/{text-to-video,image-to-video/{pro,turbo},reference-to-v
    - ○「指示で反映（実証済み）」: 比率、画像解像度ティア、透過、動画秒数、無音
    - △/✕「未確認・不可」: seed（✕実証）、negative/CFG、枚数、出力形式（✕実例あり）、safety系（✕構造上不可）
 
-2. **動画モデルリストは実質4択**（API経由・クレジットモード時）: Seedance 1.5 Pro / Wan 2.6 / Hailuo 2.3 / Vidu Q2。premium 11モデルは無反応で失敗するため、UI上でグレーアウトか警告が必要。空`items`エラーはユーザーに「プレミアムモデルのためAPI非対応の可能性」と案内すべき。
+2. **動画15モデルすべてAPI経由で利用可能**（2026-07-10夜の再検証・R4で確認）。premiumモデルは `pending_confirmation`（クレジット見積→承認）フローが挟まる。初回検証時の空`items`サイレント失敗は再発しうるため、発生時は「Lovartのプラン・クレジットを確認」の誘導（https://www.lovart.ai/ja/pricing）を表示する。
 
 3. **参照3枚制限は緩和余地あり**: fal実上限は Nano Banana系14枚 / Seedream edit 10枚 / Flux.2 Pro edit 9枚 / Luma 8枚 / Vidu Q2画像7枚。Lovartのattachmentsは構造化送達されるので、モデル別に上限を変えるのが正確。
 

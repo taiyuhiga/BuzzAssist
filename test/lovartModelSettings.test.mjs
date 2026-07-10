@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   LOVART_IMAGE_MODEL_SETTINGS,
@@ -133,6 +134,17 @@ test("buildLovartPrompt renders video hints and silence", () => {
 test("buildLovartPrompt omits the silent hint when generateAudio is undefined", () => {
   const prompt = buildLovartPrompt({ prompt: "a boat", duration: 5 }, "video");
   assert.doesNotMatch(prompt, /silent/);
+});
+
+test("Lovart quota failures point at the plan page", async () => {
+  // 402 and silent empty-items failures can only be fixed on Lovart's plan
+  // page; the UI's generationErrorAction matches these exact phrases.
+  const lovartSource = await readFile(new URL("../lib/lovartMediaGeneration.mjs", import.meta.url), "utf8");
+  assert.match(lovartSource, /Lovartのクレジットまたはプランが不足しています（402）/);
+  assert.match(lovartSource, /https:\/\/www\.lovart\.ai\/ja\/pricing/);
+  const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  assert.match(appSource, /Lovartのクレジットまたはプランが不足\|Lovartが\(動画\|画像\)を返しませんでした/);
+  assert.match(appSource, /https:\/\/www\.lovart\.ai\/ja\/pricing/);
 });
 
 test("requestedLovartImageCount clamps to 1-6", () => {

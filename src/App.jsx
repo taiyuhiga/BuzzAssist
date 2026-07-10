@@ -8298,7 +8298,19 @@ export default function App() {
   const generationErrorAction = (() => {
     const message = String(generationError || '')
     if (!message) return null
-    if (/クレジットまたはプランが不足|insufficient_credits/.test(message)) {
+    if (/Lovartのクレジットまたはプランが不足|Lovartが(動画|画像)を返しませんでした/.test(message)) {
+      return {
+        key: 'lovart-plan',
+        eyebrow: 'Lovart Plan',
+        title: 'Lovartのプラン・クレジットを確認',
+        body: 'Lovartが生成を完了できませんでした。プランやクレジットの制限が原因の可能性があります。',
+        detail: 'Lovartの料金ページでクレジット残高の追加やプランのアップグレードを確認すると続行できます。',
+        actionLabel: 'プランを見る',
+        inlineLabel: 'Lovartのプランを確認',
+        url: 'https://www.lovart.ai/ja/pricing'
+      }
+    }
+    if (/BuzzAssistのクレジットまたはプランが不足|insufficient_credits/.test(message)) {
       return {
         key: 'buzzassist-credits',
         eyebrow: 'BuzzAssist Credits',
