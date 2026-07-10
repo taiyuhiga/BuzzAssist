@@ -54,11 +54,14 @@ test("verified capabilities stay pinned", () => {
   assert.equal(getLovartVideoSettings("lovart-vidu-q2").durationRange.min, 2);
 });
 
-test("Midjourney exposes version options and the detail-rendering toggle", () => {
+test("Midjourney offers no version/detail settings (verified not honored)", () => {
+  // 2026-07-11 real generations: both the version hint and a raw trailing
+  // "--niji 7" flag were ignored by Lovart's Midjourney tool (photoreal
+  // output for an anime-only version). Do not re-add these without a fresh
+  // reflection test — see docs/lovart-fal-model-parity.md.
   const midjourney = getLovartImageSettings("lovart-midjourney");
-  assert.deepEqual(midjourney.versions, ["v8.1", "v7", "niji", "niji7"]);
-  assert.equal(midjourney.detailRendering, true);
-  // Other models keep both hidden.
+  assert.equal(midjourney.versions, null);
+  assert.equal(midjourney.detailRendering, false);
   assert.equal(getLovartImageSettings("lovart-nano-banana-2").versions, null);
   assert.equal(getLovartImageSettings("lovart-flux-2-max").detailRendering, false);
 });
