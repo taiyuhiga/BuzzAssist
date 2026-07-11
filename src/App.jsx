@@ -4949,6 +4949,30 @@ export default function App() {
     )
   }, [])
 
+  // A generating placeholder is status UI, not an editable selection. Keep
+  // Excalidraw's native selection handles off it even if an onChange/SSE echo
+  // briefly restores the selection after generation has started.
+  useLayoutEffect(() => {
+    if (!api || generatingFrameIds.size === 0) return
+    const currentAppState = api.getAppState?.() ?? {}
+    const selectedElementIds = Object.fromEntries(
+      Object.entries(currentAppState.selectedElementIds ?? {}).filter(
+        ([id, selected]) => selected && !generatingFrameIds.has(id)
+      )
+    )
+    if (Object.keys(selectedElementIds).length === Object.keys(currentAppState.selectedElementIds ?? {}).length) return
+    const elements = api.getSceneElementsIncludingDeleted()
+    const nextAppState = { ...currentAppState, selectedElementIds }
+    suppressNextChangeRef.current = true
+    api.updateScene({
+      appState: { selectedElementIds },
+      captureUpdate: CaptureUpdateAction.NEVER
+    })
+    const nextScene = createScene(elements, nextAppState, api.getFiles())
+    latestSceneRef.current = nextScene
+    refreshOverlayStates(nextScene)
+  }, [api, generatingFrameIds, refreshOverlayStates])
+
   const scheduleOverlayRefresh = useCallback((scene) => {
     // A drag translate is still applied (drag just ended or was superseded):
     // rebuild synchronously so the fresh positions and the translate reset
@@ -5699,7 +5723,7 @@ export default function App() {
         const point = lastPointerDownCanvasRef.current
         if (!hasRelevantSelection && point && Date.now() - point.time < 1200) {
           const hit = workingElements
-            .filter((el) => isGeneratorFrame(el) && !el.isDeleted)
+            .filter((el) => isGeneratorFrame(el) && !el.isDeleted && !generatingFrameIdsRef.current.has(el.id))
             .reverse()
             .find((el) => scenePointInElement(point, el))
           if (hit && hit.id !== activeFrameIdRef.current) {
@@ -5769,15 +5793,21 @@ export default function App() {
           zoom: currentAppState.zoom ?? { value: zoom }
         }
       }
+      const requestedSelectedElementIds = options.applySelection
+        ? (focusElementIds.length > 0
+            ? Object.fromEntries(focusElementIds.map((id) => [id, true]))
+            : normalized.appState.selectedElementIds ?? {})
+        : currentAppState.selectedElementIds ?? {}
+      const nextSelectedElementIds = Object.fromEntries(
+        Object.entries(requestedSelectedElementIds).filter(
+          ([id, selected]) => selected && !generatingFrameIdsRef.current.has(id)
+        )
+      )
       const nextAppState = {
         ...normalized.appState,
         // Never apply the remote selection — keep the user's live selection so
         // a refresh can't deselect the frame they're working in.
-        selectedElementIds: options.applySelection
-          ? (focusElementIds.length > 0
-              ? Object.fromEntries(focusElementIds.map((id) => [id, true]))
-              : normalized.appState.selectedElementIds ?? {})
-          : currentAppState.selectedElementIds ?? {},
+        selectedElementIds: nextSelectedElementIds,
         ...(focusedViewportState || {}),
         ...(!shouldApplyViewport
           ? {
@@ -7836,6 +7866,7 @@ export default function App() {
     setOpenMenu(null)
     setGenerationError('')
     setGeneratingFrameIds((current) => new Set(current).add(optimisticGenerationId))
+    lastPointerDownCanvasRef.current = null
     // Remove both Excalidraw's native selection border and our selected
     // overlay in the same paint as Generating.... Leaving this until after
     // preflight made the outer frame linger intermittently.
@@ -8459,6 +8490,20 @@ export default function App() {
         url: 'https://www.lovart.ai/ja/pricing'
       }
     }
+    if (/Grokのレート制限に達しました/.test(message)) {
+      return {
+        key: 'grok-rate-limit',
+        eyebrow: 'Grok Plan',
+        title: 'Grokのレート制限に達しました',
+        body: 'Grok Imagineの利用上限に到達しました。時間をおくと再試行できます。',
+        detail: 'すぐに続けるには、SuperGrokプランまたはX Premiumへのアップグレードで上限を増やせます。',
+        actionLabel: 'SuperGrokプランを見る',
+        inlineLabel: 'SuperGrokプランを見る',
+        url: 'https://grok.com/plans',
+        secondaryActionLabel: 'X Premiumに登録',
+        secondaryUrl: 'https://x.com/i/premium_sign_up'
+      }
+    }
     if (/BuzzAssistのクレジットまたはプランが不足|insufficient_credits/.test(message)) {
       return {
         key: 'buzzassist-credits',
@@ -8499,27 +8544,9 @@ export default function App() {
   })()
   const showGenerationErrorDialog = Boolean(generationErrorAction) && buzzAssistBillingDismissedFor !== generationError
   const dismissGenerationErrorDialog = () => setBuzzAssistBillingDismissedFor(generationError)
-  const openGenerationErrorAction = () => {
-    if (!generationErrorAction) return
-    // window.open can be silently blocked in in-app browsers/webviews, so
-    // fall back to a synthetic anchor click to make sure the page opens.
-    let opened = null
-    try {
-      opened = window.open(generationErrorAction.url, '_blank', 'noopener')
-    } catch {
-      opened = null
-    }
-    if (!opened) {
-      const anchor = document.createElement('a')
-      anchor.href = generationErrorAction.url
-      anchor.target = '_blank'
-      anchor.rel = 'noopener noreferrer'
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-    }
-    dismissGenerationErrorDialog()
-  }
+  // The dialog/inline actions are real <a href> links (not window.open):
+  // native link navigation is the only mechanism every in-app browser and
+  // webview honors on a user click.
   const imageModelLabel = activeImageFamily?.label ?? frameForm.imageModel
   const videoModelLabel = activeVideoFamily?.label ?? frameForm.videoModel
 
@@ -8753,13 +8780,26 @@ export default function App() {
               >
                 あとで
               </button>
-              <button
-                type="button"
+              {generationErrorAction.secondaryActionLabel ? (
+                <a
+                  className="buzzassist-login-secondary"
+                  href={generationErrorAction.secondaryUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={dismissGenerationErrorDialog}
+                >
+                  {generationErrorAction.secondaryActionLabel}
+                </a>
+              ) : null}
+              <a
                 className="buzzassist-login-primary"
-                onClick={openGenerationErrorAction}
+                href={generationErrorAction.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={dismissGenerationErrorDialog}
               >
                 {generationErrorAction.actionLabel}
-              </button>
+              </a>
             </div>
           </div>
         </div>
@@ -8963,7 +9003,7 @@ export default function App() {
           <div
             key={overlay.id}
             data-overlay-anchor={overlay.id}
-            className={`lovart-frame-overlay${overlay.isSelected ? ' is-selected' : ''}`}
+            className={`lovart-frame-overlay${overlay.isSelected ? ' is-selected' : ''}${isGenerating ? ' is-generating' : ''}`}
             style={{
               left: `${overlay.left}px`,
               top: `${overlay.top}px`,
@@ -9612,17 +9652,15 @@ export default function App() {
               <div>{generationError}</div>
               {generationErrorAction ? (
                 <div className="lovart-error-actions">
-                  <button
-                    type="button"
+                  <a
                     className="lovart-error-action"
-                    onClick={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      openGenerationErrorAction()
-                    }}
+                    href={generationErrorAction.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(event) => event.stopPropagation()}
                   >
                     {generationErrorAction.inlineLabel}
-                  </button>
+                  </a>
                 </div>
               ) : null}
               {showHermesSetupPromptInline ? (
@@ -10528,17 +10566,15 @@ export default function App() {
               <div>{generationError}</div>
               {generationErrorAction ? (
                 <div className="lovart-error-actions">
-                  <button
-                    type="button"
+                  <a
                     className="lovart-error-action"
-                    onClick={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      openGenerationErrorAction()
-                    }}
+                    href={generationErrorAction.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(event) => event.stopPropagation()}
                   >
                     {generationErrorAction.inlineLabel}
-                  </button>
+                  </a>
                 </div>
               ) : null}
             </div>

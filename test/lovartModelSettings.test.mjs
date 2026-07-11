@@ -139,6 +139,19 @@ test("buildLovartPrompt omits the silent hint when generateAudio is undefined", 
   assert.doesNotMatch(prompt, /silent/);
 });
 
+test("Grok rate limits point at SuperGrok / X Premium upgrades", async () => {
+  const mediaSource = await readFile(new URL("../lib/mediaGeneration.mjs", import.meta.url), "utf8");
+  assert.match(mediaSource, /Grokのレート制限に達しました/);
+  assert.match(mediaSource, /https:\/\/grok\.com\/plans/);
+  assert.match(mediaSource, /https:\/\/x\.com\/i\/premium_sign_up/);
+  const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  assert.match(appSource, /Grokのレート制限に達しました/);
+  assert.match(appSource, /secondaryUrl: 'https:\/\/x\.com\/i\/premium_sign_up'/);
+  assert.match(appSource, /href=\{generationErrorAction\.secondaryUrl\}/);
+  assert.match(appSource, /href=\{generationErrorAction\.url\}/);
+  assert.doesNotMatch(appSource, /openGenerationErrorAction/);
+});
+
 test("Lovart quota failures point at the plan page", async () => {
   // 402 and silent empty-items failures can only be fixed on Lovart's plan
   // page; the UI's generationErrorAction matches these exact phrases.

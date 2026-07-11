@@ -125,6 +125,13 @@ body {
   border-radius: 2px;
 }
 
+/* Cover the generator rectangle's own canvas stroke while it is only a
+   loading placeholder. Selection handles are cleared in App.jsx; extending
+   this overlay by two pixels removes the remaining purple outer outline. */
+.lovart-frame-overlay.is-generating .lovart-frame-inner {
+  inset: -2px;
+}
+
 .lovart-frame-header {
   position: absolute;
   right: 0;
@@ -602,6 +609,17 @@ body {
   cursor: pointer;
   border: 0;
   border-radius: 8px;
+}
+
+/* Action links (real <a href>) rendered as buttons inside the dialogs. */
+a.buzzassist-login-secondary,
+a.buzzassist-login-primary,
+a.lovart-error-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  text-decoration: none;
 }
 
 .buzzassist-login-secondary {

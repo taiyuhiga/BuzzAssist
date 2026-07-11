@@ -300,7 +300,7 @@ test("the generation gate answers from a cached server-verified auth status", as
   const optimisticStart = appSource.indexOf("setGeneratingFrameIds((current) => new Set(current).add(optimisticGenerationId))");
   const authAwait = appSource.indexOf("await ensureBuzzAssistLoggedIn", optimisticStart);
   assert.ok(optimisticStart >= 0 && authAwait > optimisticStart);
-  assert.match(appSource, /setGeneratingFrameIds\(\(current\) => new Set\(current\)\.add\(optimisticGenerationId\)\)\s*\n\s*\/\/ Remove both Excalidraw's native selection border[\s\S]*?applyTransientSelection\(\{\}\)/);
+  assert.match(appSource, /setGeneratingFrameIds\(\(current\) => new Set\(current\)\.add\(optimisticGenerationId\)\)\s*\n\s*lastPointerDownCanvasRef\.current = null\s*\n\s*\/\/ Remove both Excalidraw's native selection border[\s\S]*?applyTransientSelection\(\{\}\)/);
   assert.match(appSource, /const transientScene = createScene\(elements, appState, api\.getFiles\(\)\)\s*\n\s*latestSceneRef\.current = transientScene\s*\n\s*refreshOverlayStates\(transientScene\)/);
   assert.match(appSource, /clearOptimisticGeneration[\s\S]*?applyTransientSelection\(originalSelectedElementIds\)/);
   assert.match(appSource, /clearOptimisticGeneration\(\)\s*\n\s*return/);
@@ -569,7 +569,9 @@ test("remote scene application preserves current selection before syncing UI", a
   assert.match(applyRemote[1], /const remoteApplyVersion = localChangeVersionRef\.current/);
   assert.match(applyRemote[1], /if \(localChangeVersionRef\.current !== remoteApplyVersion && !options\.force\) return/);
   assert.doesNotMatch(applyRemote[1], /syncGeneratorUi\(normalized\)/);
-  assert.match(applyRemote[1], /selectedElementIds: options\.applySelection[\s\S]*?: currentAppState\.selectedElementIds \?\? \{\}/);
+  assert.match(applyRemote[1], /const requestedSelectedElementIds = options\.applySelection[\s\S]*?: currentAppState\.selectedElementIds \?\? \{\}/);
+  assert.match(applyRemote[1], /Object\.entries\(requestedSelectedElementIds\)\.filter\([\s\S]*?!generatingFrameIdsRef\.current\.has\(id\)/);
+  assert.match(applyRemote[1], /selectedElementIds: nextSelectedElementIds/);
   assert.match(applyRemote[1], /const nextScene = \{ \.\.\.normalized, appState: nextAppState \}/);
   assert.match(applyRemote[1], /syncGeneratorUi\(nextScene\)/);
 });
