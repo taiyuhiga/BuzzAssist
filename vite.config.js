@@ -1782,19 +1782,29 @@ function configureCanvasServer(server) {
                 ...(body.customData && typeof body.customData === 'object' ? body.customData : {})
               }
             })
-            // Multi-image runs (Lovart imageCount > 1) deliver the extras in a
-            // row to the right of the primary result.
+            // Multi-image runs (Lovart imageCount > 1): each extra replaces
+            // one of the placeholder frames the client laid out to the right
+            // of the primary frame; without placeholders they chain to the
+            // right of the previous result.
+            const extraAnchors = Array.isArray(body.extraAnchorElementIds)
+              ? body.extraAnchorElementIds.filter((id) => typeof id === 'string' && id)
+              : []
             const changedAssets = [result.assetFile]
+            const extras = []
             let extraAnchorId = result.elementId
-            for (const extra of Array.isArray(media.extraMedia) ? media.extraMedia : []) {
+            for (const [extraIndex, extra] of (Array.isArray(media.extraMedia) ? media.extraMedia : []).entries()) {
               try {
+                const placeholderId = extraAnchors[extraIndex]
                 const extraResult = await insertExcalidrawImage({
                   canvasDir,
                   mediaBuffer: extra.buffer,
                   mimeType: extra.mimeType,
-                  fileName: extra.fileName,
-                  anchorElementId: extraAnchorId,
-                  placement: 'right',
+                  // No explicit name: fall through to the desktop-app-style
+                  // sequential ImageN naming in canvasScene.
+                  fileName: body.fileName ? extra.fileName : undefined,
+                  anchorElementId: placeholderId ?? extraAnchorId,
+                  placement: placeholderId ? 'replace' : 'right',
+                  replaceAnchor: Boolean(placeholderId),
                   matchAnchor: true,
                   displayWidth: body.displayWidth,
                   displayHeight: body.displayHeight,
@@ -1810,12 +1820,13 @@ function configureCanvasServer(server) {
                 })
                 changedAssets.push(extraResult.assetFile)
                 extraAnchorId = extraResult.elementId
+                extras.push({ elementId: extraResult.elementId, fileId: extraResult.fileId, assetUrl: extraResult.assetUrl })
               } catch (extraError) {
                 console.warn('[generate/image] extra image insert failed:', extraError.message)
               }
             }
             broadcastCanvasChanged([canvasFile, ...changedAssets])
-            return { media, result }
+            return { media, result: { ...result, extras } }
           }
 
           if (wantsAsyncGeneration(req, body)) {

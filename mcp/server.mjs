@@ -1127,7 +1127,9 @@ async function generateExcalidrawImage(args = {}) {
     ...args,
     mediaBuffer: media.buffer,
     mimeType: media.mimeType,
-    fileName: args.fileName ?? args.imageName ?? args.image_name ?? media.fileName,
+    // Leave unset when the caller gave no name — canvasScene then assigns
+    // desktop-app-style sequential ImageN names.
+    fileName: args.fileName ?? args.imageName ?? args.image_name,
     customData: {
       codexGeneratedImage: true,
       codexGenerationModel: media.model,
@@ -1163,7 +1165,8 @@ async function generateExcalidrawVideo(args = {}) {
     ...args,
     mediaBuffer: media.buffer,
     mimeType: media.mimeType,
-    fileName: args.fileName ?? args.videoName ?? args.video_name ?? media.fileName,
+    // Unset → canvasScene assigns sequential VideoN names (desktop parity).
+    fileName: args.fileName ?? args.videoName ?? args.video_name,
     aspectRatio: args.aspectRatio ?? args.aspect_ratio,
     duration: args.duration,
     prompt: args.prompt,
@@ -1248,7 +1251,7 @@ async function generateExcalidrawImagesBatch(args = {}) {
           canvasDir: args.canvasDir,
           mediaBuffer: media.buffer,
           mimeType: media.mimeType,
-          fileName: job.fileName ?? job.imageName ?? job.image_name ?? media.fileName,
+          fileName: job.fileName ?? job.imageName ?? job.image_name,
           anchorElementId: frame?.elementId,
           replaceAnchor: Boolean(frame?.elementId),
           matchAnchor: true,
@@ -1393,7 +1396,7 @@ async function generateExcalidrawVideosBatch(args = {}) {
           canvasDir: args.canvasDir,
           mediaBuffer: media.buffer,
           mimeType: media.mimeType,
-          fileName: job.fileName ?? job.videoName ?? job.video_name ?? media.fileName,
+          fileName: job.fileName ?? job.videoName ?? job.video_name,
           anchorElementId: frame?.elementId,
           replaceAnchor: Boolean(frame?.elementId),
           matchAnchor: true,

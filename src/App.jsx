@@ -1907,6 +1907,21 @@ async function hydrateSceneAssetBackedFiles(scene, options = {}) {
   return { ...scene, files }
 }
 
+// 生成完了直後のシーンに含まれる「生成結果」画像のfileIdを、置換元フレーム
+// （codexAnchorElementId）から特定する。適用前に先行ハイドレートすることで
+// 灰色フレームを見せずに結果を即表示するために使う。
+function generatedResultFileIds(scene, anchorIds) {
+  const fileIds = new Set()
+  if (!anchorIds || anchorIds.size === 0) return fileIds
+  for (const element of scene?.elements ?? []) {
+    if (element?.type !== 'image' || element.isDeleted || !element.fileId) continue
+    if (element.customData?.codexMediaKind === 'video') continue
+    const anchor = element.customData?.codexAnchorElementId
+    if (anchor && anchorIds.has(anchor)) fileIds.add(element.fileId)
+  }
+  return fileIds
+}
+
 async function hydrateSceneAssetBackedFilesWithTimeout(scene, options = {}, timeoutMs = 1200) {
   let timeoutId = 0
   try {
@@ -4625,6 +4640,12 @@ export default function App() {
   }, [generationError])
   const [buzzAssistLoginBusy, setBuzzAssistLoginBusy] = useState(false)
   const [generatingFrameIds, setGeneratingFrameIds] = useState(() => new Set())
+  // SSE経由のシーン適用（安定コールバック内）から現在の生成中フレームを参照
+  // するためのミラー。
+  const generatingFrameIdsRef = useRef(generatingFrameIds)
+  useEffect(() => {
+    generatingFrameIdsRef.current = generatingFrameIds
+  }, [generatingFrameIds])
   const [capabilities, setCapabilities] = useState(null)
   const [canvasPicker, setCanvasPicker] = useState(null)
   const latestSceneRef = useRef(DEFAULT_SCENE)
@@ -5298,6 +5319,29 @@ export default function App() {
     }
   }, [api, flushHydratedFiles])
 
+  // 生成結果のアセットをシーン適用前にExcalidraw本体へ注入する。
+  // applyRemoteSceneはファイルを必ずプレースホルダー化し直すため、シーン側を
+  // 先にハイドレートしても打ち消される — Excalidrawのfilesストアに直接
+  // addFilesしておけば、要素が現れた瞬間から画像が表示される。
+  const prehydrateResultFiles = useCallback(async (scene, fileIds, timeoutMs = 8000) => {
+    if (!api || !(fileIds instanceof Set) || fileIds.size === 0) return
+    const records = []
+    let timeoutId = 0
+    try {
+      await Promise.race([
+        hydrateAssetBackedFiles(scene?.files ?? {}, (file) => {
+          records.push(file)
+        }, { onlyFileIds: fileIds }),
+        new Promise((resolve) => {
+          timeoutId = window.setTimeout(resolve, timeoutMs)
+        })
+      ])
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+    if (records.length > 0) api.addFiles(records)
+  }, [api])
+
   const scheduleVisibleAssetHydration = useCallback((scene) => {
     if (!api || !scene) return
     window.clearTimeout(assetHydrationTimerRef.current)
@@ -5831,6 +5875,13 @@ export default function App() {
         // broadcast): if the content matches what we last synced, do nothing.
         const fingerprint = sceneFingerprint(normalizeScene(payload.scene))
         if (fingerprint === lastSyncedFingerprintRef.current && !shouldApplyFocus) return
+        // 生成中フレームを置き換える結果画像は、シーン適用前にアセットを
+        // Excalidraw本体へ注入しておく（灰色フレームを見せないため）。
+        // その間はフレームがGenerating...表示のまま残る。
+        const resultFileIds = generatedResultFileIds(payload.scene, generatingFrameIdsRef.current)
+        if (resultFileIds.size > 0) {
+          await prehydrateResultFiles(payload.scene, resultFileIds)
+        }
         applyRemoteScene(payload.scene, {
           applySelection: eventPayload.applySelection === true,
           applyViewport: eventPayload.applyViewport === true,
@@ -5847,7 +5898,7 @@ export default function App() {
       console.warn('Codex Excalidraw live refresh disconnected.', error)
     }
     return () => events.close()
-  }, [api, applyRemoteScene])
+  }, [api, applyRemoteScene, prehydrateResultFiles])
 
   useEffect(() => {
     if (!api) return undefined
@@ -7668,6 +7719,47 @@ export default function App() {
     return promise
   }, [])
 
+  // 複数枚生成: アンカーの右へ残り枚数分のGenerating...フレームを複製する。
+  // サーバーは各フレームを1枚ずつの結果で置き換える。
+  const spawnExtraGeneratingFrames = useCallback((anchorElement, anchorId, count) => {
+    if (!api || !anchorElement || count <= 0) return []
+    const baseElements = api.getSceneElementsIncludingDeleted()
+    const anchorLive = baseElements.find((element) => element.id === anchorId) ?? anchorElement
+    const frameGap = 24
+    const clones = convertToExcalidrawElements(
+      Array.from({ length: count }, (_, i) => ({
+        type: 'rectangle',
+        x: Math.round(anchorLive.x + (anchorLive.width + frameGap) * (i + 1)),
+        y: Math.round(anchorLive.y),
+        width: anchorLive.width,
+        height: anchorLive.height,
+        strokeColor: GENERATOR_FRAME_BORDER_COLOR,
+        backgroundColor: GENERATOR_FRAME_FILL_COLOR,
+        fillStyle: 'solid',
+        strokeStyle: 'solid',
+        strokeWidth: GENERATOR_FRAME_STROKE_WIDTH,
+        roughness: 0,
+        customData: { ...(anchorLive.customData ?? {}), role: 'frame' }
+      })),
+      { regenerateIds: true }
+    )
+    let elementsWithClones = baseElements
+    const cloneElements = []
+    for (const clone of clones) {
+      const nextClone = { ...clone, index: chooseIndex(elementsWithClones) }
+      cloneElements.push(nextClone)
+      elementsWithClones = [...elementsWithClones, nextClone]
+    }
+    suppressNextChangeRef.current = true
+    api.updateScene({ elements: elementsWithClones, captureUpdate: CaptureUpdateAction.NEVER })
+    const sceneWithClones = createScene(elementsWithClones, api.getAppState(), api.getFiles())
+    latestSceneRef.current = sceneWithClones
+    refreshOverlayStates(sceneWithClones)
+    const ids = cloneElements.map((element) => element.id)
+    setGeneratingFrameIds((current) => new Set([...current, ...ids]))
+    return ids
+  }, [api, refreshOverlayStates])
+
   const runFrameGeneration = useCallback(async () => {
     if (!api) return
     const selectedResult = selectedGeneratedResultRef.current
@@ -7748,12 +7840,33 @@ export default function App() {
     // overlay in the same paint as Generating.... Leaving this until after
     // preflight made the outer frame linger intermittently.
     applyTransientSelection({})
+    // 複数枚指定は送信と同時に（プリフライトを待たずに）Generating...フレーム
+    // を右へ並べる。再生成時は新フレーム作成後に並べる。
+    const requestedImageCount = kind === 'image'
+      ? Math.min(Number(savedForm.imageCount) || 1, getMaxImageCount(savedForm.imageModel))
+      : 1
+    let extraFrameIds = []
+    if (!isRegeneratingResult && requestedImageCount > 1) {
+      extraFrameIds = spawnExtraGeneratingFrames(anchorElement, anchorElementId, requestedImageCount - 1)
+    }
     const clearOptimisticGeneration = () => {
       setGeneratingFrameIds((current) => {
         const next = new Set(current)
         next.delete(optimisticGenerationId)
+        for (const extraId of extraFrameIds) next.delete(extraId)
         return next
       })
+      if (extraFrameIds.length > 0) {
+        const cleanedElements = api.getSceneElementsIncludingDeleted().map((element) =>
+          extraFrameIds.includes(element.id) ? { ...element, isDeleted: true } : element
+        )
+        suppressNextChangeRef.current = true
+        api.updateScene({ elements: cleanedElements, captureUpdate: CaptureUpdateAction.NEVER })
+        const cleanedScene = createScene(cleanedElements, api.getAppState(), api.getFiles())
+        latestSceneRef.current = cleanedScene
+        refreshOverlayStates(cleanedScene)
+        extraFrameIds = []
+      }
       applyTransientSelection(originalSelectedElementIds)
     }
     if (generationRouteId === 'hermes' && !(await refreshHermesStatus())) {
@@ -7797,6 +7910,11 @@ export default function App() {
     setActiveFrameId('')
 
     let keepGeneratingFrame = false
+
+    // 複数枚指定の再生成では、新しいフレームの右にクローンを並べる。
+    if (requestedImageCount > 1 && extraFrameIds.length === 0) {
+      extraFrameIds = spawnExtraGeneratingFrames(generationAnchorElement, generationAnchorId, requestedImageCount - 1)
+    }
 
     try {
       await saveCanvas(latestSceneRef.current)
@@ -7856,7 +7974,8 @@ export default function App() {
               aspectRatio: savedForm.aspectRatio,
               quality: savedForm.quality,
               imageSize: savedForm.imageSize,
-              imageCount: Math.min(Number(savedForm.imageCount) || 1, getMaxImageCount(savedForm.imageModel)),
+              imageCount: requestedImageCount,
+              extraAnchorElementIds: extraFrameIds,
               modelVersion: getImageVersionOptions(savedForm.imageModel)?.includes(savedForm.imageVersion) ? savedForm.imageVersion : undefined,
               detailRendering: supportsDetailRendering(savedForm.imageModel) && savedForm.imageDetailRendering === true,
               referenceImagePaths: normalizeAssetList(savedForm.imageReferences)
@@ -7895,6 +8014,7 @@ export default function App() {
           setGeneratingFrameIds((current) => {
             const next = new Set(current)
             next.delete(generationAnchorId)
+            for (const extraId of extraFrameIds) next.delete(extraId)
             return next
           })
         }, 10 * 60 * 1000)
@@ -7903,15 +8023,43 @@ export default function App() {
       const canvasResponse = await canvasFetch(CANVAS_ENDPOINT)
       if (canvasResponse.ok) {
         const canvasPayload = await canvasResponse.json()
+        let nextScene = canvasPayload.scene
+        // 結果アセットを適用前にExcalidraw本体へ注入して、灰色フレームを
+        // 見せずに完成画像を即表示する（Generating...はこの間表示されたまま）。
+        const resultFileIds = new Set(
+          [payload.fileId, ...((Array.isArray(payload.extras) ? payload.extras : []).map((extra) => extra.fileId))].filter(Boolean)
+        )
+        if (resultFileIds.size > 0) {
+          await prehydrateResultFiles(nextScene, resultFileIds)
+        }
+        // サーバーが要求枚数より少なく返した場合、残ったプレースホルダー
+        // フレームは削除する。
+        const consumedExtras = Array.isArray(payload.extras) ? payload.extras.length : 0
+        const leftoverFrameIds = extraFrameIds.slice(consumedExtras)
+        if (leftoverFrameIds.length > 0 && Array.isArray(nextScene?.elements)) {
+          nextScene = {
+            ...nextScene,
+            elements: nextScene.elements.map((element) =>
+              leftoverFrameIds.includes(element.id) ? { ...element, isDeleted: true } : element
+            )
+          }
+        }
         // After generation the server replaces the frame with the result and
         // selects it; apply that selection so the result's panel opens.
-        applyRemoteScene(canvasPayload.scene, { force: true, applySelection: true })
+        applyRemoteScene(nextScene, { force: true, applySelection: true })
+        if (leftoverFrameIds.length > 0) scheduleCanvasSave(latestSceneRef.current)
       }
     } catch (error) {
       setGenerationError(error.message)
       if (api) {
         const currentElements = api.getSceneElementsIncludingDeleted()
         let nextElements = currentElements
+        // 失敗したら複製したプレースホルダーフレームは片付ける。
+        if (extraFrameIds.length > 0) {
+          nextElements = nextElements.map((element) =>
+            extraFrameIds.includes(element.id) ? { ...element, isDeleted: true } : element
+          )
+        }
         let selectedElementIds = {}
         if (isRegeneratingResult && selectedResult?.elementId) {
           // Desktop parity: a failed retry removes the freshly created frame
@@ -7956,11 +8104,12 @@ export default function App() {
           const next = new Set(current)
           next.delete(generationAnchorId)
           next.delete(optimisticGenerationId)
+          for (const extraId of extraFrameIds) next.delete(extraId)
           return next
         })
       }
     }
-  }, [api, applyRemoteScene, ensureBuzzAssistLoggedIn, frameForm, generatingFrameIds, insertGeneratorFrame, refreshHermesStatus, refreshOverlayStates, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, selectedGeneratedResult, updateActiveFrameElement])
+  }, [api, applyRemoteScene, ensureBuzzAssistLoggedIn, frameForm, generatingFrameIds, insertGeneratorFrame, prehydrateResultFiles, refreshHermesStatus, refreshOverlayStates, saveCanvas, scheduleCanvasSave, scheduleSelectionSave, selectedGeneratedResult, spawnExtraGeneratingFrames, updateActiveFrameElement])
 
   // Generation for utility frames. SRT replaces the frame with an SRT card;
   // silence cut keeps the frame selected and downloads a Premiere XML.
